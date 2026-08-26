@@ -1,0 +1,9 @@
+gymnasium
+psycopg2-binary
+alpaca-trade-api
+pandas
+plotly
+scikit-learn
+stable-baselines3
+python-dotenv
+requests

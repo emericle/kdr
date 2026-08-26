@@ -1,0 +1,9 @@
+# Environment Config
+
+.venv/
+__pycache__/
+*.pyc
+.env
+outputs/
+data/
+.DS_Store
