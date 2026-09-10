@@ -135,7 +135,10 @@ class DatabaseManager:
         try:
             query = session.query(ModelWeightsModel).filter_by(symbol=symbol).first()
             if query:
-                return json.loads(query.weights_json)
+                try:
+                    return json.loads(query.weights_json)
+                except (json.JSONDecodeError, TypeError):
+                    return None
             return None
         finally:
             self.connection.close(session)

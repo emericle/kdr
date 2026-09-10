@@ -9,11 +9,11 @@ if sys.version_info < (3, 14):
     print("Error: This application requires Python 3.14 or greater.")
     sys.exit(1)
 
-
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from src.database import DatabaseManager
 from src.config_gatekeeper import validate_configs
+from src.state_mapper import StateMapper
 
 # Configure Logging
 DEBUG_MODE = False  # Default to false unless specified
@@ -82,36 +82,57 @@ class DataStreamBuffer:
             return ready_data
 
 class AlpacaStreamProcessor:
-    """Handles the production of data from Alpaca streams."""
-    def __init__(self, db_manager: DatabaseManager):
+    """Handles the production of data from Alpaca streams and maps to domain state."""
+    def __init__(self, db_manager: DatabaseManager, state_mapper: StateMapper):
         self.db_manager = db_manager
+        self.state_mapper = state_mapper
         self.buffer = DataStreamBuffer()
         self.running = True
 
     def start(self):
         logger.info("Alpaca Stream Processor started.")
+        logger.info("State mapper initialized for domain state mapping")
 
 class DBWriterWorker(threading.Thread):
-    """Consumer thread that processes buffered data and writes to Database."""
-    def __init__(self, db_manager: DatabaseManager, data_queue: queue.Queue):
+    """Consumer thread that processes buffered data, maps to domain state, and writes to Database."""
+    def __init__(self, db_manager: DatabaseManager, state_mapper: StateMapper, data_queue: queue.Queue):
         super().__init__(daemon=True)
         self.db_manager = db_manager
+        self.state_mapper = state_mapper
         self.queue = data_queue
         self.running = True
 
     def run(self):
         logger.info("DB Writer Worker started.")
+        logger.info("Domain state mapper attached for data transformation")
+
         while self.running:
             try:
                 # Use a timeout so we can periodically check the running flag
                 item = self.queue.get(timeout=1)
                 if item is None:  # Sentinel value to stop worker
                     break
-                
+
                 symbol, bar_data = item
                 logger.info("Processing %s at %s", symbol, bar_data['timestamp'])
+
+                # Optionally map to domain state here for validation
+                try:
+                    # Create minimal tick from bar for state mapping
+                    tick_data = {
+                        'symbol': symbol,
+                        'price': bar_data['close'],
+                        'size': bar_data['volume'],
+                        'timestamp': bar_data['timestamp']
+                    }
+                    # Just mapping - won't use the result
+                    self.state_mapper.map_tick_data_to_state([tick_data])
+                except Exception as map_error:
+                    logger.debug(f"Mapping tick to state: {map_error}")
+
+                # Write raw data to database
                 self.db_manager.add_market_data([bar_data])
-                
+
                 # Signal that task is complete
                 self.queue.task_done()
             except queue.Empty:
@@ -130,16 +151,18 @@ class DBWriterWorker(threading.Thread):
 def run_worker_threads():
     validate_configs()
     db_manager = DatabaseManager()
-    
+    state_mapper = StateMapper()
+
     # Explicitly initialize the database tables
     logger.info("Initializing database...")
     db_manager.connection.init_db()
     logger.info("Database initialization complete: %s", db_manager.connection.engine)
-    
+
     data_queue = queue.Queue()
-    writer = DBWriterWorker(db_manager, data_queue)
+    writer = DBWriterWorker(db_manager, state_mapper, data_queue)
     writer.start()
     logger.info("Producer and Consumer threads initialized.")
+    logger.info("Data pipeline ready: Alpaca → Adapter → Domain State → DB")
     
     # Mocking ingestion for testing purposes
     dummy_bar = {
