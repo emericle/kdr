@@ -5,6 +5,7 @@ import time
 import datetime
 import logging
 import sys
+import asyncio
 from unittest.mock import MagicMock, patch, MagicMock as Mock
 from src.scraper import (
     Tick,
@@ -279,6 +280,331 @@ class TestAlpacaStreamProcessor:
         # Verify logger was called
         assert mock_logger.info.called
 
+    def test_processor_custom_symbols_and_queue(self):
+        """Test processor with custom symbols and data queue."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        processor = AlpacaStreamProcessor(
+            mock_db,
+            mock_state_mapper,
+            symbols=["AAPL", "MSFT"],
+            api_key="test_key",
+            api_secret="test_secret",
+            data_queue=q,
+        )
+        assert processor.symbols == ["AAPL", "MSFT"]
+        assert processor.data_queue is q
+        assert processor.api_key == "test_key"
+        assert processor.api_secret == "test_secret"
+
+    def test_processor_handle_trade_dict(self):
+        """Test handling a trade dictionary."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        trade_data = {
+            "symbol": "AAPL",
+            "price": 150.25,
+            "size": 100,
+            "timestamp": datetime.datetime(2023, 1, 1, 12, 0, 10),
+        }
+        processor.handle_trade(trade_data)
+
+        assert "AAPL" in processor.buffer.buffer
+        assert len(processor.buffer.buffer["AAPL"]["2023-01-01 12:00"]) == 1
+        stored = processor.buffer.buffer["AAPL"]["2023-01-01 12:00"][0]
+        assert stored["price"] == 150.25
+        assert stored["size"] == 100.0
+
+    def test_processor_handle_trade_iso_timestamp(self):
+        """Test handling trade with ISO timestamp string."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        trade_data = {
+            "symbol": "TSLA",
+            "price": 250.0,
+            "size": 50,
+            "timestamp": "2023-01-01T12:00:15Z",
+        }
+        processor.handle_trade(trade_data)
+
+        assert "TSLA" in processor.buffer.buffer
+        assert "2023-01-01 12:00" in processor.buffer.buffer["TSLA"]
+
+    def test_processor_handle_trade_alpaca_entity(self):
+        """Test handling trade passed as object with attributes."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        mock_trade = MagicMock()
+        mock_trade.symbol = "NVDA"
+        mock_trade.price = 450.0
+        mock_trade.size = 20
+        mock_trade.timestamp = datetime.datetime(2023, 1, 1, 12, 0, 5)
+        del mock_trade.get
+
+        processor.handle_trade(mock_trade)
+        assert "NVDA" in processor.buffer.buffer
+
+    def test_processor_handle_bar_routes_to_queue(self):
+        """Test handling bar puts bar onto data queue."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, data_queue=q)
+
+        bar_data = {
+            "symbol": "AAPL",
+            "open": 150.0,
+            "high": 155.0,
+            "low": 149.0,
+            "close": 154.0,
+            "volume": 500,
+            "timestamp": datetime.datetime(2023, 1, 1, 12, 0),
+        }
+        processor.handle_bar(bar_data)
+
+        assert not q.empty()
+        symbol, item = q.get_nowait()
+        assert symbol == "AAPL"
+        assert item["close"] == 154.0
+        assert item["volume"] == 500
+
+    def test_processor_flush_ready_bars(self):
+        """Test flushing ready bars from buffer into data queue."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        processor = AlpacaStreamProcessor(
+            mock_db, mock_state_mapper, symbols=["AAPL"], data_queue=q
+        )
+
+        tick = {
+            "symbol": "AAPL",
+            "price": 100.0,
+            "size": 10,
+            "timestamp": datetime.datetime(2020, 1, 1, 12, 0),
+        }
+        processor.handle_trade(tick)
+
+        flushed = processor.flush_ready_bars()
+        assert "AAPL" in flushed
+        assert not q.empty()
+        symbol, bar = q.get_nowait()
+        assert symbol == "AAPL"
+        assert bar["volume"] == 10
+
+    def test_processor_start_with_stream_client(self):
+        """Test start wires stream_client trade subscriptions."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        mock_stream = MagicMock()
+
+        processor = AlpacaStreamProcessor(
+            mock_db,
+            mock_state_mapper,
+            symbols=["AAPL", "TSLA"],
+            stream_client=mock_stream,
+        )
+        processor.start(run_in_background=False)
+
+        mock_stream.subscribe_trades.assert_called_once()
+        args, _ = mock_stream.subscribe_trades.call_args
+        assert callable(args[0])
+        assert "AAPL" in args
+        assert "TSLA" in args
+        mock_stream.run.assert_called_once()
+
+    def test_processor_start_background_and_stop(self):
+        """Test start in background thread and stop."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        mock_stream = MagicMock()
+
+        processor = AlpacaStreamProcessor(
+            mock_db,
+            mock_state_mapper,
+            symbols=["AAPL"],
+            stream_client=mock_stream,
+        )
+        processor.start(run_in_background=True)
+        assert processor.running is True
+
+        processor.stop()
+        assert processor.running is False
+        mock_stream.stop.assert_called_once()
+
+    def test_processor_malformed_trade_does_not_crash(self):
+        """Test that malformed trade payload is handled gracefully."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        processor.handle_trade({"invalid": "data"})
+        processor.handle_trade(None)
+        assert len(processor.buffer.buffer) == 0
+
+    def test_processor_async_handle_bar(self):
+        """Test async bar callback."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, data_queue=q)
+
+        bar_dict = {
+            "symbol": "MSFT",
+            "open": 300.0,
+            "high": 305.0,
+            "low": 299.0,
+            "close": 304.0,
+            "volume": 2000,
+            "timestamp": "2023-01-01T12:00:00Z"
+        }
+        asyncio.run(processor._async_handle_bar(bar_dict))
+        assert not q.empty()
+        sym, item = q.get_nowait()
+        assert sym == "MSFT"
+        assert item["close"] == 304.0
+
+    def test_processor_parse_trade_numeric_timestamps(self):
+        """Test parsing trades with epoch numeric timestamps."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        # Seconds epoch
+        trade_sec = {"symbol": "AAPL", "price": 150.0, "size": 10, "timestamp": 1672574400}
+        parsed = processor._parse_trade(trade_sec)
+        assert parsed is not None
+        assert parsed["timestamp"].year == 2023
+
+        # Nanoseconds epoch
+        trade_nano = {"symbol": "AAPL", "price": 150.0, "size": 10, "timestamp": 1672574400000000000}
+        parsed_nano = processor._parse_trade(trade_nano)
+        assert parsed_nano is not None
+        assert parsed_nano["timestamp"].year == 2023
+
+    def test_processor_handle_bar_object_attributes(self):
+        """Test handling bar passed as entity object with attributes."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, data_queue=q)
+
+        mock_bar = MagicMock()
+        mock_bar.symbol = "GOOGL"
+        mock_bar.open = 100.0
+        mock_bar.high = 105.0
+        mock_bar.low = 99.0
+        mock_bar.close = 103.0
+        mock_bar.volume = 500
+        mock_bar.timestamp = datetime.datetime(2023, 1, 1, 12, 0)
+        del mock_bar.get
+
+        processor.handle_bar(mock_bar)
+        assert not q.empty()
+        sym, bar = q.get_nowait()
+        assert sym == "GOOGL"
+        assert bar["open"] == 100.0
+
+    def test_processor_init_stream_client_with_keys(self):
+        """Test initializing stream client with configured keys."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(
+            mock_db,
+            mock_state_mapper,
+            api_key="key",
+            api_secret="secret",
+            base_url="https://paper-api.alpaca.markets",
+        )
+
+        with patch("src.scraper.AlpacaTradeStream") as mock_stream_cls:
+            mock_instance = MagicMock()
+            mock_stream_cls.return_value = mock_instance
+            client = processor._init_stream_client()
+            assert client == mock_instance
+            mock_stream_cls.assert_called_once_with(
+                key_id="key",
+                secret_key="secret",
+                data_feed="iex",
+                raw_data=True,
+                base_url="https://paper-api.alpaca.markets",
+            )
+
+    def test_processor_trade_state_mapper_exception_handled(self):
+        """Test that state mapper exceptions during trade handling are logged and handled."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        mock_state_mapper.map_tick_data_to_state.side_effect = RuntimeError("Mapping failure")
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        trade_data = {
+            "symbol": "AAPL",
+            "price": 150.0,
+            "size": 10,
+            "timestamp": datetime.datetime.now()
+        }
+        # Should not raise exception
+        processor.handle_trade(trade_data)
+        assert "AAPL" in processor.buffer.buffer
+
+    def test_processor_run_stream_handles_exception(self):
+        """Test _run_stream logs error and handles client.run exception."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.run.side_effect = RuntimeError("WebSocket connection dropped")
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, stream_client=mock_stream)
+
+        # Should not crash
+        processor._run_stream()
+        mock_stream.run.assert_called_once()
+
+    def test_processor_flusher_loop_single_iteration(self):
+        """Test _flusher_loop runs flush_ready_bars and exits when running=False."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        call_count = 0
+        def mock_flush():
+            nonlocal call_count
+            call_count += 1
+            processor.running = False
+            return {}
+
+        processor.flush_ready_bars = mock_flush
+        with patch("src.scraper.time.sleep") as mock_sleep:
+            processor._flusher_loop()
+            assert call_count == 1
+            mock_sleep.assert_called_once_with(1)
+
+    def test_processor_stop_joins_threads_and_handles_client_exception(self):
+        """Test processor stop handles stream_client exceptions and joins threads."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.stop.side_effect = RuntimeError("Failed stopping client")
+
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, stream_client=mock_stream)
+        mock_t1 = MagicMock()
+        mock_t1.is_alive.return_value = True
+        mock_t2 = MagicMock()
+        mock_t2.is_alive.return_value = True
+        processor._stream_thread = mock_t1
+        processor._flusher_thread = mock_t2
+
+        processor.stop()
+        assert processor.running is False
+        mock_t1.join.assert_called_once_with(timeout=2)
+        mock_t2.join.assert_called_once_with(timeout=2)
+
 
 class TestDBWriterWorker:
     """Tests for DBWriterWorker."""
@@ -353,6 +679,69 @@ class TestDBWriterWorker:
             
             # Should not call debug in normal mode
             assert mock_logger.debug.call_count == 0
+
+    def test_worker_run_processes_item_and_stops_on_sentinel(self):
+        """Test DBWriterWorker.run executes, maps state, adds market data and terminates on None."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        worker = DBWriterWorker(mock_db, mock_state_mapper, q)
+
+        bar_data = {
+            "symbol": "AAPL",
+            "close": 150.0,
+            "volume": 100.0,
+            "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
+        }
+        q.put(("AAPL", bar_data))
+        q.put(None)  # Sentinel
+
+        worker.run()
+
+        mock_state_mapper.map_tick_data_to_state.assert_called_once()
+        mock_db.add_market_data.assert_called_once_with([bar_data])
+
+    def test_worker_run_processes_batch_in_single_db_call(self):
+        """Test DBWriterWorker drains multiple items and inserts them in a single batch."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        worker = DBWriterWorker(mock_db, mock_state_mapper, q, batch_size=10)
+
+        bars = [
+            ("AAPL", {"symbol": "AAPL", "close": 150.0 + i, "volume": 100.0, "timestamp": datetime.datetime(2023, 1, 1, 12, i)})
+            for i in range(5)
+        ]
+        for b in bars:
+            q.put(b)
+        q.put(None)
+
+        worker.run()
+
+        assert mock_db.add_market_data.call_count == 1
+        inserted_batch = mock_db.add_market_data.call_args[0][0]
+        assert len(inserted_batch) == 5
+
+    def test_worker_run_handles_database_exception(self):
+        """Test DBWriterWorker.run logs and continues when an exception occurs."""
+        mock_db = MagicMock()
+        mock_db.add_market_data.side_effect = [RuntimeError("DB Write error"), None]
+        mock_state_mapper = MagicMock()
+        q = queue.Queue()
+        worker = DBWriterWorker(mock_db, mock_state_mapper, q)
+
+        bar_data = {
+            "symbol": "AAPL",
+            "close": 150.0,
+            "volume": 100.0,
+            "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
+        }
+        q.put(("AAPL", bar_data))
+        q.put(None)
+
+        with patch("src.scraper.time.sleep") as mock_sleep:
+            worker.run()
+            mock_sleep.assert_called_once_with(1)
 
 
 class TestSetupLogging:
@@ -483,6 +872,17 @@ class TestRunWorkerThreads:
         
         # Should still call initialization
         assert mock_validate.called
+
+    @patch('src.scraper.validate_configs')
+    @patch('src.scraper.StateMapper')
+    @patch('src.scraper.DatabaseManager')
+    def test_run_worker_threads_with_duration(self, mock_db_class, mock_state_mapper, mock_validate):
+        """Test run_worker_threads with explicit duration."""
+        mock_db = MagicMock()
+        mock_db.connection = MagicMock()
+        mock_db_class.return_value = mock_db
+        run_worker_threads(symbols=["AAPL"], duration_seconds=0.01)
+        assert mock_db.connection.init_db.called
 
 
 class TestDataBufferConcurrency:

@@ -27,16 +27,30 @@ The project implements a **Bellman Decision model** for equity portfolio managem
     - `PerformanceAnalyzer`: Calculates win rate, total return, profit factor, average win/loss.
     - `ReportScheduler`: Schedules automated reporting tasks.
     - `MultiSymbolReporter`: Generates multi-symbol summary reports.
+- **Architectural & Performance Optimizations**:
+  - `src/scraper.py`:
+    - `DataStreamBuffer`: $O(1)$ running OHLCV state aggregation and fast minute key generation, eliminating per-tick string formatting and $O(5N)$ traversals.
+    - `DBWriterWorker`: Batch queue draining for multi-bar single-transaction persistence.
+    - `AlpacaStreamProcessor`: Live websocket streaming subscriptions, background execution, and automatic minute bar queueing.
+  - `src/database.py`:
+    - `DatabaseManager.add_market_data`: Single-transaction batched inserts (`session.add_all`), static column extraction, and DeclarativeBase typing.
+  - `src/state_mapper.py`:
+    - Single-pass transformations for bars and ticks; eliminated initialization side-effects and missing symbol fallback bugs.
+  - `src/trading_execution.py`:
+    - `OrderTracker`: Incremental $O(1)$ position tracking replacing $O(N)$ historical scans.
+    - `AlpacaClient`: Connection pooling and HTTP keep-alive reuse via `requests.Session`.
+    - `TradingExecutor`: Deepened `execute` interface alias.
 - **Testing & Verification**:
-  - 163 unit tests passing across all components (`tests/unit/` and `tests/`).
-  - Integration tests passing in `tests/integration_tests.py`.
-  - Code coverage at 82%.
+  - 186 unit tests passing across all components (`tests/unit/` and `tests/`).
+  - 6 integration test groups passing in `tests/integration_tests.py`.
+  - Code coverage at 93%.
 
 ## Status
 - **Risk Management (Kelly Criterion & dynamic position sizing)**: [COMPLETED]
 - **Alpaca Order Integration & Trading Execution**: [COMPLETED]
 - **Observability & Automated Reporting Engine**: [COMPLETED]
-- **Next Objective**: Live websocket connectivity in `AlpacaStreamProcessor` (`src/scraper.py`) for live streaming ticks into `DataStreamBuffer`.
+- **Live WebSocket Connectivity in AlpacaStreamProcessor**: [COMPLETED]
+- **Architecture & Performance Deepening (Candidates 1, 2, 3)**: [COMPLETED]
 
 ## Files & References
 - Trading Execution: `src/trading_execution.py`

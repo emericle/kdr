@@ -5,7 +5,7 @@ import logging
 from typing import List, Optional
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.pool import QueuePool
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
@@ -65,8 +65,9 @@ class DatabaseConnection:
         if session:
             session.close()
 
-# Base Model for SQLAlchemy 2.0+ style or standard declaration
-Base = declarative_base()
+# Base Model for SQLAlchemy 2.0+
+class Base(DeclarativeBase):
+    pass
 
 class MarketDataModel(Base):
     """Schema for market data records."""
@@ -97,26 +98,31 @@ class ModelWeightsModel(Base):
     last_trained = Column(DateTime)
     weights_json = Column(Text)
 
+MARKET_DATA_COLUMNS = {"symbol", "timestamp", "open", "high", "low", "close", "volume"}
+
 class DatabaseManager:
     """High-level manager for database operations."""
     def __init__(self, db_url: Optional[str] = None):
         self.connection = DatabaseConnection(db_url)
 
-    def add_market_data(self, data: List[dict]):
-        """Adds new market data records to the database."""
+    def add_market_data(self, data: List[dict]) -> None:
+        """Adds new market data records to the database in a single batched transaction."""
+        if not data:
+            return
+
         session = self.connection.get_session()
         if not session:
             logger.warning("No session available")
             return
 
         try:
+            records = []
             for item in data:
-                # Ensure only keys that belong to the model are included
-                cols = MarketDataModel.__table__.columns.keys()
-                filtered_item = {k: v for k, v in item.items() if k in cols}
+                filtered_item = {k: v for k, v in item.items() if k in MARKET_DATA_COLUMNS}
                 logger.debug("Ready to insert record: %s", filtered_item)
-                new_record = MarketDataModel(**filtered_item)
-                session.add(new_record)
+                records.append(MarketDataModel(**filtered_item))
+
+            session.add_all(records)
             session.commit()
             logger.info("Database commit successful.")
         except Exception as e:

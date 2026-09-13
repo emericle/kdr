@@ -10,9 +10,12 @@ TODO Items Tested:
 3. ✓ Trading Execution (RiskManager, PositionSizing, OrderTracker, AlpacaClient, TradingExecutor)
 4. ✓ Reporting (CSVReporter, ChartGenerator, PerformanceAnalyzer)
 5. ✓ End-to-End Pipeline (Ingestion State -> Bellman Decision -> Risk Sizing -> Execution -> Report)
+6. ✓ Streaming Data Pipeline (AlpacaStreamProcessor -> Buffer -> DBWriterWorker)
 """
 import sys
 import os
+import queue
+import time
 import tempfile
 from datetime import datetime
 from unittest.mock import MagicMock
@@ -24,6 +27,7 @@ from src.domain import MarketState, PortfolioState, FullState, Action, TradeMove
 from src.model import BellmanEngine
 from src.trading_execution import PositionSizing, RiskManager, OrderTracker, AlpacaClient, TradingExecutor, OrderRecord
 from src.reporting import CSVReporter, ChartGenerator, PerformanceAnalyzer
+from src.scraper import AlpacaStreamProcessor, DBWriterWorker
 
 
 def main():
@@ -193,6 +197,49 @@ def main():
         total_passed += 1
     except Exception as e:
         print(f"✗ End-to-End Pipeline test failed: {e}")
+        total_failed += 1
+
+    # Test 6: Streaming Ingestion Pipeline (AlpacaStreamProcessor -> Buffer -> DBWriterWorker)
+    print("\n" + "=" * 70)
+    print("Test Group: Streaming Data Pipeline")
+    print("=" * 70)
+
+    try:
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        data_queue = queue.Queue()
+
+        processor = AlpacaStreamProcessor(
+            db_manager=mock_db,
+            state_mapper=mock_state_mapper,
+            symbols=["AAPL"],
+            data_queue=data_queue
+        )
+        # Ingest simulated tick from past minute
+        past_time = datetime(2023, 1, 1, 10, 0, 0)
+        processor.handle_trade({
+            "symbol": "AAPL",
+            "price": 182.5,
+            "size": 100,
+            "timestamp": past_time
+        })
+        # Flush aggregated bar into queue
+        flushed = processor.flush_ready_bars()
+        assert "AAPL" in flushed
+        print("✓ AlpacaStreamProcessor buffered tick and produced ready bar")
+
+        # Ingest with DBWriterWorker
+        worker = DBWriterWorker(mock_db, mock_state_mapper, data_queue)
+        worker.start()
+        data_queue.put(None)  # Sentinel to stop worker
+        worker.join(timeout=2)
+
+        assert mock_db.add_market_data.called
+        print("✓ DBWriterWorker consumed stream bar and persisted to database")
+
+        total_passed += 1
+    except Exception as e:
+        print(f"✗ Streaming Data Pipeline test failed: {e}")
         total_failed += 1
 
     # Final Summary

@@ -21,11 +21,17 @@ class StateMapper:
     - Combined → FullState with complete context
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        alpaca_adapter: Optional[AlpacaDataAdapter] = None,
+        adanos_adapter: Optional[AdanosDataAdapter] = None
+    ):
         """Initialize the state mapper with configured adapters."""
-        validate_configs()
-        self.alpaca_adapter = AlpacaDataAdapter()
-        self.adanos_adapter = AdanosDataAdapter()
+        is_valid = validate_configs(exit_on_error=False)
+        if not is_valid:
+            logger.info("Configuration validation skipped during StateMapper init.")
+        self.alpaca_adapter = alpaca_adapter or AlpacaDataAdapter()
+        self.adanos_adapter = adanos_adapter or AdanosDataAdapter()
 
     def map_bar_data_to_state(
         self,
@@ -57,7 +63,7 @@ class StateMapper:
         bars: List[dict]
     ) -> MarketState:
         """
-        Map multiple bars into current market state.
+        Map multiple bars into current market state in a single pass.
 
         Args:
             bars: List of bar data from Alpaca
@@ -65,21 +71,26 @@ class StateMapper:
         Returns:
             MarketState with latest prices
         """
-        parsed_bars = [self.alpaca_adapter.parse_bar_data(bar) for bar in bars]
-        parsed_bars = [bar for bar in parsed_bars if bar is not None]
+        prices: Dict[str, float] = {}
+        for bar in bars:
+            parsed = self.alpaca_adapter.parse_bar_data(bar)
+            if parsed and 'symbol' in parsed:
+                prices[parsed['symbol']] = float(parsed['close'])
 
-        # Add 'price' field (use 'close' from bar data)
-        for bar in parsed_bars:
-            bar['price'] = bar['close']
+        if not prices:
+            raise ValueError("Cannot create market state from empty bar data")
 
-        return self.alpaca_adapter.create_market_state(parsed_bars)
+        return MarketState(
+            prices=prices,
+            sentiment_scores={sym: 0.0 for sym in prices}
+        )
 
     def map_tick_data_to_state(
         self,
         ticks: List[dict]
     ) -> MarketState:
         """
-        Map tick data to current market state.
+        Map tick data to current market state in a single pass.
 
         Args:
             ticks: List of tick data from Alpaca
@@ -87,10 +98,19 @@ class StateMapper:
         Returns:
             MarketState with latest prices
         """
-        parsed_ticks = [self.alpaca_adapter.parse_tick_data(tick) for tick in ticks]
-        parsed_ticks = [tick for tick in parsed_ticks if tick is not None]
+        prices: Dict[str, float] = {}
+        for tick in ticks:
+            parsed = self.alpaca_adapter.parse_tick_data(tick)
+            if parsed and 'symbol' in parsed:
+                prices[parsed['symbol']] = float(parsed['price'])
 
-        return self.alpaca_adapter.create_market_state(parsed_ticks)
+        if not prices:
+            raise ValueError("Cannot create market state from empty tick data")
+
+        return MarketState(
+            prices=prices,
+            sentiment_scores={sym: 0.0 for sym in prices}
+        )
 
     def map_positions_to_portfolio_state(
         self,
@@ -190,16 +210,19 @@ class StateMapper:
             FullState with relevant context for the symbol
         """
         # Create minimal market state for the symbol
-        if symbol in market_data:
-            tick_data = market_data[symbol]
-            parsed_tick = self.alpaca_adapter.parse_tick_data(tick_data)
-        else:
-            # Try bar data
-            if symbol in market_data:
-                bar_data = market_data[symbol]
-                parsed_tick = self.alpaca_adapter.parse_bar_data(bar_data)
+        if symbol not in market_data:
+            raise ValueError(f"No market data found for symbol {symbol}")
+
+        raw_item = market_data[symbol]
+        parsed_tick = self.alpaca_adapter.parse_tick_data(raw_item)
+        if not parsed_tick or 'price' not in parsed_tick:
+            parsed_bar = self.alpaca_adapter.parse_bar_data(raw_item)
+            if parsed_bar and 'close' in parsed_bar:
+                parsed_tick = {'price': parsed_bar['close']}
+            elif isinstance(raw_item, dict) and 'price' in raw_item:
+                parsed_tick = {'price': float(raw_item['price'])}
             else:
-                raise ValueError(f"No market data found for symbol {symbol}")
+                raise ValueError(f"Could not parse market data for symbol {symbol}")
 
         market_state = MarketState(
             prices={symbol: parsed_tick['price']},

@@ -170,16 +170,34 @@ class OrderValidator:
 
 
 class OrderTracker:
-    """Maintains in-memory log of executed orders and tracks net positions."""
+    """Maintains in-memory log of executed orders and tracks net positions in O(1)."""
 
-    def __init__(self):
+    def __init__(self, max_history: int = 10000):
         self._history: List[Dict[str, Any]] = []
+        self._positions: Dict[str, float] = {}
+        self.max_history = max_history
 
     def record_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         record = dict(order)
         if "timestamp" not in record:
             record["timestamp"] = datetime.datetime.now(datetime.timezone.utc)
         self._history.append(record)
+        if len(self._history) > self.max_history:
+            self._history = self._history[-self.max_history:]
+
+        status = str(record.get("status", "submitted")).lower()
+        if status in ("rejected", "canceled", "cancelled", "expired", "failed"):
+            return record
+
+        sym = record.get("symbol")
+        if sym:
+            qty = float(record.get("filled_qty", record.get("quantity", record.get("qty", 0))))
+            side = str(record.get("side", "")).lower()
+            if side == "buy":
+                self._positions[sym] = round(self._positions.get(sym, 0.0) + qty, 6)
+            elif side == "sell":
+                self._positions[sym] = round(self._positions.get(sym, 0.0) - qty, 6)
+
         return record
 
     def get_order_history(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -188,21 +206,16 @@ class OrderTracker:
         return [o for o in self._history if o.get("symbol") == symbol]
 
     def get_positions(self) -> Dict[str, float]:
-        positions: Dict[str, float] = {}
-        for order in self._history:
-            sym = order.get("symbol")
-            if not sym:
-                continue
-            qty = float(order.get("quantity", order.get("qty", 0)))
-            side = str(order.get("side", "")).lower()
-            if side == "buy":
-                positions[sym] = positions.get(sym, 0.0) + qty
-            elif side == "sell":
-                positions[sym] = positions.get(sym, 0.0) - qty
-        return positions
+        """Returns current net positions in O(1) time complexity."""
+        return dict(self._positions)
+
+    def get_position(self, symbol: str) -> float:
+        """Returns net position for a symbol in O(1)."""
+        return self._positions.get(symbol, 0.0)
 
     def clear(self) -> None:
         self._history.clear()
+        self._positions.clear()
 
 
 @dataclass
@@ -220,18 +233,23 @@ class OrderRecord:
 
 class AlpacaClient:
     """
-    Client for placing orders and querying account data via Alpaca REST API.
+    Client for placing orders and querying account data via Alpaca REST API
+    with connection pooling.
     """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        session: Optional[requests.Session] = None
     ):
-        self.api_key = api_key or os.getenv("ALPACA_API_KEY", "")
-        self.api_secret = api_secret or os.getenv("ALPACA_SECRET_KEY", "")
-        self.base_url = (base_url or os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets/v2")).rstrip("/")
+        self.api_key: str = api_key or os.getenv("ALPACA_API_KEY") or ""
+        self.api_secret: str = api_secret or os.getenv("ALPACA_SECRET_KEY") or ""
+        base: str = base_url or os.getenv("ALPACA_BASE_URL") or "https://paper-api.alpaca.markets/v2"
+        self.base_url: str = base.rstrip("/")
+        self.session: requests.Session = session or requests.Session()
+        self.session.headers.update(self._headers())
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -261,7 +279,7 @@ class AlpacaClient:
             payload["limit_price"] = str(limit_price)
 
         try:
-            resp = requests.post(url, json=payload, headers=self._headers(), timeout=10)
+            resp = self.session.post(url, json=payload, timeout=10)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 return OrderRecord(
@@ -300,7 +318,7 @@ class AlpacaClient:
     def get_account(self) -> Dict[str, Any]:
         url = f"{self.base_url}/account"
         try:
-            resp = requests.get(url, headers=self._headers(), timeout=10)
+            resp = self.session.get(url, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return {}
@@ -311,7 +329,7 @@ class AlpacaClient:
     def get_positions(self) -> List[Dict[str, Any]]:
         url = f"{self.base_url}/positions"
         try:
-            resp = requests.get(url, headers=self._headers(), timeout=10)
+            resp = self.session.get(url, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return []

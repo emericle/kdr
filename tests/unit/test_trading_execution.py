@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import os
+import requests
 
 
 class TestPositionSizing:
@@ -258,7 +259,7 @@ class TestAlpacaClient:
         assert client.api_key == "test_key"
         assert client.api_secret == "test_secret"
 
-    @patch("requests.post")
+    @patch.object(requests.Session, "post")
     def test_submit_order_success(self, mock_post):
         from src.trading_execution import AlpacaClient
 
@@ -286,7 +287,7 @@ class TestAlpacaClient:
         assert order.filled_qty == 100
         assert order.status == "filled"
 
-    @patch("requests.get")
+    @patch.object(requests.Session, "get")
     def test_get_account(self, mock_get):
         from src.trading_execution import AlpacaClient
 
@@ -392,5 +393,63 @@ class TestTradingExecutor:
         assert executed.id == "ord-999"
         assert executed.symbol == "AAPL"
         assert len(executor.order_tracker.get_order_history()) == 1
+
+    def test_execute_decision_and_order_tracker_status_filtering(self):
+        from src.trading_execution import TradingExecutor, AlpacaClient, OrderRecord, OrderTracker
+        from src.domain import TradeMovement
+
+        mock_client = MagicMock(spec=AlpacaClient)
+        mock_client.submit_order.return_value = OrderRecord(
+            id="ord-1000",
+            symbol="TSLA",
+            quantity=5,
+            filled_qty=5,
+            side="buy",
+            order_type="market",
+            status="filled",
+            price=200.0
+        )
+
+        tracker = OrderTracker(max_history=2)
+        executor = TradingExecutor(alpaca_client=mock_client, order_tracker=tracker)
+        executed = executor.execute_decision(
+            action=TradeMovement.BUY,
+            symbol="TSLA",
+            current_price=200.0,
+            portfolio_cash=5000.0,
+            portfolio_value=10000.0
+        )
+        assert executed is not None
+        assert tracker.get_position("TSLA") == 5.0
+
+        # Disregard rejected order
+        tracker.record_order({
+            "symbol": "TSLA",
+            "quantity": 10,
+            "side": "buy",
+            "status": "rejected"
+        })
+        assert tracker.get_position("TSLA") == 5.0
+
+        # Test clear
+        tracker.clear()
+        assert tracker.get_position("TSLA") == 0.0
+        assert tracker.get_positions() == {}
+
+    def test_alpaca_client_session_pooling(self):
+        import requests
+        from src.trading_execution import AlpacaClient
+
+        mock_session = MagicMock(spec=requests.Session)
+        mock_session.headers = {}
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "acc-pool"}
+        mock_session.get.return_value = mock_resp
+
+        client = AlpacaClient(api_key="k", api_secret="s", session=mock_session)
+        acc = client.get_account()
+        assert acc["id"] == "acc-pool"
+        mock_session.get.assert_called_once()
 
 

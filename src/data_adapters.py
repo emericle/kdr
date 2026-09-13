@@ -23,7 +23,7 @@ class AlpacaDataAdapter:
     """
 
     @staticmethod
-    def parse_tick_data(tick_data: dict) -> dict:
+    def parse_tick_data(tick_data: dict) -> Optional[dict]:
         """
         Parse a raw tick from Alpaca API into a standardized format.
 
@@ -46,7 +46,7 @@ class AlpacaDataAdapter:
             return None
 
     @staticmethod
-    def parse_bar_data(bar_data: dict) -> dict:
+    def parse_bar_data(bar_data: dict) -> Optional[dict]:
         """
         Parse a OHLC bar from Alpaca API.
 

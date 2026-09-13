@@ -2,7 +2,7 @@
 
 ## 1. Core Engine & Logic
 - [x] **Implement `src/model.py`**: Define the Bellman decision model, Gymnasium environment, and RL training logic.
-- [ ] **Complete `src/scraper.py`**: Implement the actual `AlpacaStreamProcessor` to connect to live websocket streams.
+- [x] **Complete `src/scraper.py`**: Implement the actual `AlpacaStreamProcessor` to connect to live websocket streams.
 - [x] **Implement Risk Management**: Add logic for the Kelly Criterion and dynamic position sizing.
 
 ## 2. Data Ingestion Expansion
