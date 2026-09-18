@@ -23,6 +23,25 @@ class AlpacaDataAdapter:
     """
 
     @staticmethod
+    def _normalize_timestamp(raw_ts: Any) -> datetime.datetime:
+        """Helper to normalize string, datetime or numeric timestamp."""
+        if isinstance(raw_ts, datetime.datetime):
+            return raw_ts
+        if isinstance(raw_ts, str):
+            # Replace Z with +00:00 for ISO parsing
+            cleaned = raw_ts.replace('Z', '+00:00')
+            return datetime.datetime.fromisoformat(cleaned)
+        if isinstance(raw_ts, (int, float)):
+            # If greater than 1e11 assume nanoseconds/milliseconds, otherwise seconds
+            if raw_ts > 1e16:
+                return datetime.datetime.fromtimestamp(raw_ts / 1e9, tz=datetime.timezone.utc)
+            elif raw_ts > 1e11:
+                return datetime.datetime.fromtimestamp(raw_ts / 1e3, tz=datetime.timezone.utc)
+            else:
+                return datetime.datetime.fromtimestamp(raw_ts, tz=datetime.timezone.utc)
+        raise ValueError(f"Unsupported timestamp format: {raw_ts}")
+
+    @staticmethod
     def parse_tick_data(tick_data: dict) -> Optional[dict]:
         """
         Parse a raw tick from Alpaca API into a standardized format.
@@ -34,11 +53,12 @@ class AlpacaDataAdapter:
             Dict with standardized format including symbol, price, size, timestamp
         """
         try:
+            ts = AlpacaDataAdapter._normalize_timestamp(tick_data.get('timestamp'))
             return {
                 'symbol': tick_data.get('symbol', '').upper(),
                 'price': float(tick_data.get('price', 0.0)),
                 'size': float(tick_data.get('qty', 0.0)),
-                'timestamp': datetime.datetime.fromisoformat(tick_data.get('timestamp', '').replace('Z', '+00:00')),
+                'timestamp': ts,
                 'side': tick_data.get('side', 'UNKNOWN')
             }
         except (AttributeError, ValueError, KeyError) as e:
@@ -57,9 +77,10 @@ class AlpacaDataAdapter:
             Dict with open, high, low, close, volume data
         """
         try:
+            ts = AlpacaDataAdapter._normalize_timestamp(bar_data.get('timestamp'))
             return {
                 'symbol': bar_data.get('symbol', '').upper(),
-                'timestamp': datetime.datetime.fromisoformat(bar_data.get('timestamp', '').replace('Z', '+00:00')),
+                'timestamp': ts,
                 'open': float(bar_data.get('open', 0.0)),
                 'high': float(bar_data.get('high', 0.0)),
                 'low': float(bar_data.get('low', 0.0)),

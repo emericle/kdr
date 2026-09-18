@@ -42,6 +42,20 @@ class TestAlpacaDataAdapter:
 
         assert result is None
 
+    def test_parse_tick_data_with_datetime_object(self):
+        """Should parse tick data when timestamp is already datetime."""
+        now = datetime.datetime.now()
+        raw_tick = {
+            'symbol': 'AAPL',
+            'price': 150.0,
+            'qty': 10,
+            'timestamp': now,
+            'side': 'BUY'
+        }
+        result = AlpacaDataAdapter.parse_tick_data(raw_tick)
+        assert result is not None
+        assert result['timestamp'] == now
+
     def test_parse_bar_data_success(self):
         """Should successfully parse bar data."""
         raw_bar = {
@@ -62,6 +76,22 @@ class TestAlpacaDataAdapter:
         assert result['high'] == 155.0
         assert result['low'] == 144.0
         assert result['close'] == 153.0
+
+    def test_parse_bar_data_with_datetime_object(self):
+        """Should parse bar data when timestamp is already datetime."""
+        now = datetime.datetime.now()
+        raw_bar = {
+            'symbol': 'AAPL',
+            'timestamp': now,
+            'open': 145.0,
+            'high': 155.0,
+            'low': 144.0,
+            'close': 153.0,
+            'volume': 1000
+        }
+        result = AlpacaDataAdapter.parse_bar_data(raw_bar)
+        assert result is not None
+        assert result['timestamp'] == now
 
     def test_create_market_state_from_ticks(self):
         """Should create market state from tick data."""

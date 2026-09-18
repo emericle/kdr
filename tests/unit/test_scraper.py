@@ -13,7 +13,9 @@ from src.scraper import (
     AlpacaStreamProcessor,
     DBWriterWorker,
     setup_logging,
-    run_worker_threads
+    run_worker_threads,
+    parse_args,
+    normalize_symbols
 )
 
 
@@ -273,9 +275,9 @@ class TestAlpacaStreamProcessor:
         """Test processor start method."""
         mock_db = MagicMock()
         mock_state_mapper = MagicMock()
-        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, api_key="", api_secret="")
 
-        processor.start()
+        processor.start(run_in_background=True)
 
         # Verify logger was called
         assert mock_logger.info.called
@@ -780,11 +782,11 @@ class TestRunWorkerThreads:
     
     @patch('src.scraper.validate_configs')
     @patch('src.scraper.DatabaseManager')
+    @patch('src.scraper.AlpacaStreamProcessor')
     @patch('src.scraper.logger')
     @patch('src.scraper.time.sleep')
-    def test_run_worker_threads_basic(self, mock_sleep, mock_logger, mock_db_class, mock_validate):
-        """Test basic flow of run_worker_threads."""
-        # Create mock instances
+    def test_run_worker_threads_basic(self, mock_sleep, mock_logger, mock_processor_class, mock_db_class, mock_validate):
+        """Test basic flow of run_worker_threads with continuous=False."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
         mock_db.connection.engine = MagicMock()
@@ -792,9 +794,8 @@ class TestRunWorkerThreads:
         
         mock_validate.return_value = None
         
-        # Run the function
         try:
-            run_worker_threads()
+            run_worker_threads(continuous=False)
         except:
             pass  # Ignore exceptions
         
@@ -804,12 +805,13 @@ class TestRunWorkerThreads:
     
     @patch('src.scraper.validate_configs')
     @patch('src.scraper.DatabaseManager')
+    @patch('src.scraper.AlpacaStreamProcessor')
     @patch('src.scraper.queue.Queue')
     @patch('src.scraper.threading.Thread')
     @patch('src.scraper.time.sleep')
     @patch('src.scraper.logger')
     def test_run_worker_threads_with_sentinel(self, mock_sleep, mock_logger, mock_thread,
-                                               mock_queue_class, mock_db_class, mock_validate):
+                                               mock_queue_class, mock_processor_class, mock_db_class, mock_validate):
         """Test worker threads with sentinel value."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
@@ -826,14 +828,13 @@ class TestRunWorkerThreads:
 
         mock_validate.return_value = None
 
-        # Mock queue operations
         mock_queue.get.side_effect = [
-            ("AAPL", {"timestamp": datetime.datetime(2023, 1, 1, 12, 0)}),  # Normal item
-            None,  # Sentinel
+            ("AAPL", {"timestamp": datetime.datetime(2023, 1, 1, 12, 0)}),
+            None,
         ]
 
         try:
-            run_worker_threads()
+            run_worker_threads(continuous=False)
         except:
             pass
 
@@ -841,12 +842,13 @@ class TestRunWorkerThreads:
     
     @patch('src.scraper.validate_configs')
     @patch('src.scraper.DatabaseManager')
+    @patch('src.scraper.AlpacaStreamProcessor')
     @patch('src.scraper.queue.Queue')
     @patch('src.scraper.threading.Thread')
     @patch('src.scraper.time.sleep')
     @patch('src.scraper.logger')
     def test_run_worker_threads_empty_queue(self, mock_sleep, mock_logger, mock_thread, 
-                                           mock_queue_class, mock_db_class, mock_validate):
+                                           mock_queue_class, mock_processor_class, mock_db_class, mock_validate):
         """Test worker threads with empty queue."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
@@ -861,28 +863,167 @@ class TestRunWorkerThreads:
         mock_thread.start.return_value = None
         
         mock_validate.return_value = None
-        
-        # Empty queue
         mock_queue.get.side_effect = queue.Empty
         
         try:
-            run_worker_threads()
+            run_worker_threads(continuous=False)
         except:
             pass
         
-        # Should still call initialization
         assert mock_validate.called
 
     @patch('src.scraper.validate_configs')
+    @patch('src.scraper.AlpacaStreamProcessor')
     @patch('src.scraper.StateMapper')
     @patch('src.scraper.DatabaseManager')
-    def test_run_worker_threads_with_duration(self, mock_db_class, mock_state_mapper, mock_validate):
+    def test_run_worker_threads_with_duration(self, mock_db_class, mock_state_mapper, mock_processor_class, mock_validate):
         """Test run_worker_threads with explicit duration."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
         mock_db_class.return_value = mock_db
         run_worker_threads(symbols=["AAPL"], duration_seconds=0.01)
         assert mock_db.connection.init_db.called
+
+    @patch('src.scraper.validate_configs')
+    @patch('src.scraper.AlpacaStreamProcessor')
+    @patch('src.scraper.DBWriterWorker')
+    @patch('src.scraper.DatabaseManager')
+    def test_run_worker_threads_continuous_default_with_stop_event(
+        self, mock_db_class, mock_writer_class, mock_processor_class, mock_validate
+    ):
+        """Verify continuous mode is default and terminates when stop_event is set."""
+        mock_db = MagicMock()
+        mock_db.connection = MagicMock()
+        mock_db_class.return_value = mock_db
+
+        mock_writer = MagicMock()
+        mock_writer.is_alive.return_value = True
+        mock_writer_class.return_value = mock_writer
+
+        mock_processor = MagicMock()
+        mock_processor_class.return_value = mock_processor
+
+        stop_event = threading.Event()
+        # Pre-set stop_event so it does one loop and exits immediately
+        stop_event.set()
+
+        run_worker_threads(symbols=["AAPL", "MSFT"], stop_event=stop_event)
+
+        assert mock_processor_class.called
+        assert mock_processor.start.called
+        assert mock_processor.stop.called
+        assert mock_writer.join.called
+
+    @patch('src.scraper.validate_configs')
+    @patch('src.scraper.AlpacaStreamProcessor')
+    @patch('src.scraper.DBWriterWorker')
+    @patch('src.scraper.DatabaseManager')
+    def test_run_worker_threads_continuous_handles_keyboard_interrupt(
+        self, mock_db_class, mock_writer_class, mock_processor_class, mock_validate
+    ):
+        """Verify KeyboardInterrupt is gracefully caught and resources cleaned up."""
+        mock_db = MagicMock()
+        mock_db.connection = MagicMock()
+        mock_db_class.return_value = mock_db
+
+        mock_writer = MagicMock()
+        mock_writer.is_alive.return_value = True
+        mock_writer_class.return_value = mock_writer
+
+        mock_processor = MagicMock()
+        mock_processor_class.return_value = mock_processor
+
+        stop_event = MagicMock()
+        stop_event.is_set.side_effect = [False]
+        stop_event.wait.side_effect = KeyboardInterrupt()
+
+        # Should not raise exception
+        run_worker_threads(symbols=["AAPL"], stop_event=stop_event)
+
+        assert mock_processor.stop.called
+        assert mock_writer.join.called
+
+    @patch('src.scraper.validate_configs')
+    @patch('src.scraper.AlpacaStreamProcessor')
+    @patch('src.scraper.DBWriterWorker')
+    @patch('src.scraper.DatabaseManager')
+    def test_run_worker_threads_mock_fallback_all_symbols(
+        self, mock_db_class, mock_writer_class, mock_processor_class, mock_validate
+    ):
+        """Verify mock fallback queues bars for all specified symbols."""
+        mock_db = MagicMock()
+        mock_db.connection = MagicMock()
+        mock_db_class.return_value = mock_db
+
+        mock_writer = MagicMock()
+        mock_writer.is_alive.return_value = True
+        mock_writer_class.return_value = mock_writer
+
+        mock_processor = MagicMock()
+        mock_processor_class.return_value = mock_processor
+
+        symbols = ["AAPL", "TSLA", "GOOGL"]
+        with patch('src.scraper.queue.Queue') as mock_queue_cls:
+            mock_queue = MagicMock()
+            mock_queue_cls.return_value = mock_queue
+
+            run_worker_threads(symbols=symbols, continuous=False, mock_fallback=True)
+
+            # Check that mock bars were put for all 3 symbols
+            put_symbols = [call_args[0][0][0] for call_args in mock_queue.put.call_args_list if call_args[0][0] is not None]
+            assert "AAPL" in put_symbols
+            assert "TSLA" in put_symbols
+            assert "GOOGL" in put_symbols
+
+
+class TestCLIArgs:
+    """Tests for parse_args CLI handling."""
+
+    def test_default_args(self):
+        """Verify default CLI arguments: continuous=True, debug=False, mock=False."""
+        args = parse_args([])
+        assert args.continuous is True
+        assert args.debug is False
+        assert args.symbols is None
+        assert args.duration is None
+        assert args.mock is False
+
+    def test_continuous_flag_explicit(self):
+        """Verify --continuous flag retains True."""
+        args = parse_args(["--continuous"])
+        assert args.continuous is True
+
+    def test_no_continuous_flag(self):
+        """Verify --no-continuous flag disables continuous mode."""
+        args = parse_args(["--no-continuous"])
+        assert args.continuous is False
+
+    def test_symbols_flag(self):
+        """Verify --symbols flag parses comma-separated string."""
+        args = parse_args(["--symbols", "AAPL,MSFT,GOOGL"])
+        assert args.symbols == "AAPL,MSFT,GOOGL"
+
+    def test_duration_flag(self):
+        """Verify --duration flag parses float seconds."""
+        args = parse_args(["--duration", "10.5"])
+        assert args.duration == 10.5
+
+    def test_mock_flag(self):
+        """Verify --mock flag enables mock mode."""
+        args = parse_args(["--mock"])
+        assert args.mock is True
+
+    def test_debug_flag(self):
+        """Verify --debug flag enables debug mode."""
+        args = parse_args(["--debug"])
+        assert args.debug is True
+
+    def test_normalize_symbols_helper(self):
+        """Verify normalize_symbols parses string, list, or returns defaults."""
+        assert normalize_symbols(None) == ["AAPL", "TSLA"]
+        assert normalize_symbols("") == ["AAPL", "TSLA"]
+        assert normalize_symbols("aapl, msft , TSLA") == ["AAPL", "MSFT", "TSLA"]
+        assert normalize_symbols(["aapl", "googl"]) == ["AAPL", "GOOGL"]
 
 
 class TestDataBufferConcurrency:

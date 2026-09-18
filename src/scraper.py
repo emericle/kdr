@@ -6,10 +6,17 @@ import logging
 import datetime
 import sys
 import asyncio
+import signal
+import argparse
 
 if sys.version_info < (3, 14):
     print("Error: This application requires Python 3.14 or greater.")
     sys.exit(1)
+
+# Ensure project root is in sys.path when executed directly
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
@@ -430,7 +437,24 @@ class DBWriterWorker(threading.Thread):
             logger.debug("Saving record for %s at %s", symbol, bar_data['timestamp'])
         # Database writing logic here...
 
-def run_worker_threads(symbols: Optional[List[str]] = None, duration_seconds: Optional[float] = None) -> None:
+def normalize_symbols(symbols: Optional[Union[str, List[str]]]) -> List[str]:
+    """Helper to normalize string, comma-separated string, or list of symbols to uppercase."""
+    if not symbols:
+        return ["AAPL", "TSLA"]
+    if isinstance(symbols, str):
+        raw_list = symbols.split(",")
+    else:
+        raw_list = symbols
+    cleaned = [s.strip().upper() for s in raw_list if s and s.strip()]
+    return cleaned or ["AAPL", "TSLA"]
+
+def run_worker_threads(
+    symbols: Optional[Union[str, List[str]]] = None,
+    duration_seconds: Optional[float] = None,
+    continuous: bool = True,
+    mock_fallback: bool = False,
+    stop_event: Optional[threading.Event] = None
+) -> None:
     validate_configs()
     db_manager = DatabaseManager()
     state_mapper = StateMapper()
@@ -446,47 +470,122 @@ def run_worker_threads(symbols: Optional[List[str]] = None, duration_seconds: Op
     logger.info("Producer and Consumer threads initialized.")
     logger.info("Data pipeline ready: Alpaca → Adapter → Domain State → DB")
 
-    symbols = symbols or ["AAPL", "TSLA"]
+    resolved_symbols = normalize_symbols(symbols)
     processor = AlpacaStreamProcessor(
         db_manager=db_manager,
         state_mapper=state_mapper,
-        symbols=symbols,
+        symbols=resolved_symbols,
         data_queue=data_queue
     )
-    processor.start(run_in_background=True)
 
-    if duration_seconds is not None:
-        time.sleep(duration_seconds)
-    else:
-        # Fallback ingestion mock to verify processing pipeline
-        dummy_bar = {
-            "timestamp": datetime.datetime(2023, 1, 1, 12, 0),
-            "open": 150.0,
-            "high": 160.0,
-            "low": 140.0,
-            "close": 155.0,
-            "volume": 1000
-        }
+    if not mock_fallback:
+        processor.start(run_in_background=True)
+
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    try:
+        if mock_fallback:
+            for sym in resolved_symbols:
+                dummy_bar = {
+                    "timestamp": datetime.datetime.now(),
+                    "open": 150.0,
+                    "high": 160.0,
+                    "low": 140.0,
+                    "close": 155.0,
+                    "volume": 1000
+                }
+                if DEBUG_MODE:
+                    logger.debug("Injecting mock bar for %s into queue...", sym)
+                data_queue.put((sym, dummy_bar))
+
+        if continuous:
+            logger.info("Running in continuous mode for symbols: %s. Press Ctrl+C to stop.", resolved_symbols)
+            start_time = time.time()
+            while not stop_event.is_set():
+                if duration_seconds is not None and (time.time() - start_time) >= duration_seconds:
+                    logger.info("Duration of %s seconds reached. Stopping...", duration_seconds)
+                    break
+                if hasattr(writer, "is_alive") and not writer.is_alive():
+                    logger.warning("DBWriterWorker thread terminated unexpectedly.")
+                    break
+                stop_event.wait(timeout=0.5)
+        else:
+            timeout = duration_seconds if duration_seconds is not None else 1.0
+            stop_event.wait(timeout=timeout)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Shutdown signal received.")
+    finally:
+        # Stop processor and worker
+        if not mock_fallback:
+            logger.info("Stopping stream processor...")
+            processor.stop()
         if DEBUG_MODE:
-            logger.debug("Injecting mock bar into queue...")
-        data_queue.put(("AAPL", dummy_bar))
-        time.sleep(2)
+            logger.debug("Sending sentinel value to stop.")
+        data_queue.put(None)
+        writer.running = False  # Ensure the loop finishes
+        logger.info("Worker command sent, waiting for DB writer...")
+        if hasattr(writer, "join"):
+            try:
+                writer.join(timeout=3)
+            except Exception as e:
+                logger.debug("Error joining writer: %s", e)
+        logger.info("Worker finished.")
 
-    # Stop processor and worker
-    processor.stop()
-    if DEBUG_MODE:
-        logger.debug("Sending sentinel value to stop.")
-    data_queue.put(None)
-    writer.running = False  # Ensure the loop finishes
-    logger.info("Worker command sent, waiting 1 sec...")
-    time.sleep(1)
-    logger.info("Worker finished.")
+def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="KDR Data Ingestion and Streaming Processor")
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument(
+        '--continuous',
+        dest='continuous',
+        action='store_true',
+        default=True,
+        help='Run continuously (default: True)'
+    )
+    parser.add_argument(
+        '--no-continuous',
+        dest='continuous',
+        action='store_false',
+        help='Run once without continuous streaming'
+    )
+    parser.add_argument(
+        '--symbols',
+        type=str,
+        default=None,
+        help='Comma-separated list of symbols (e.g. AAPL,TSLA,MSFT)'
+    )
+    parser.add_argument(
+        '--duration',
+        type=float,
+        default=None,
+        help='Duration in seconds to run before shutting down (optional)'
+    )
+    parser.add_argument(
+        '--mock',
+        action='store_true',
+        help='Inject mock fallback bar for testing'
+    )
+    return parser.parse_args(args)
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    args = parser.parse_args()
-    
+    args = parse_args()
     setup_logging(args.debug)
-    run_worker_threads()
+
+    stop_event = threading.Event()
+    def _sig_handler(sig, frame):
+        logger.info("Received signal %s, initiating graceful shutdown...", sig)
+        stop_event.set()
+
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(s, _sig_handler)
+        except (ValueError, AttributeError):
+            pass
+
+    run_worker_threads(
+        symbols=args.symbols,
+        duration_seconds=args.duration,
+        continuous=args.continuous,
+        mock_fallback=args.mock,
+        stop_event=stop_event
+    )

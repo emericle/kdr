@@ -7,57 +7,31 @@ import json
 
 class TestConfigGatekeeper(unittest.TestCase):
     def test_missing_all_keys_raises_sys_exit(self):
-        # Save original environment
-        original_env = os.environ.copy()
-        
-        try:
-            # Clear all required keys
-            for key in ["ADANOS_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "DATABASE_URL"]:
-                if key in original_env:
-                    del original_env[key]
-            
+        with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(SystemExit) as context:
                 validate_configs()
-            
             self.assertEqual(context.exception.code, 1)
-        finally:
-            # Restore environment
-            os.environ.clear()
-            os.environ.update(original_env)
 
     def test_missing_one_key_raises_sys_exit(self):
-        original_env = os.environ.copy()
-        
-        try:
-            # Remove only one key
-            if "ADANOS_API_KEY" in original_env:
-                del original_env["ADANOS_API_KEY"]
-            
+        env = {
+            "ALPACA_API_KEY": "test_key",
+            "ALPACA_SECRET_KEY": "test_secret",
+            "DATABASE_URL": "postgresql://user:pass@host/db"
+        }
+        with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(SystemExit) as context:
                 validate_configs()
-            
             self.assertEqual(context.exception.code, 1)
-        finally:
-            os.environ.clear()
-            os.environ.update(original_env)
 
     def test_missing_multiple_keys_raises_sys_exit(self):
-        original_env = os.environ.copy()
-        
-        try:
-            # Remove two keys
-            if "ADANOS_API_KEY" in original_env:
-                del original_env["ADANOS_API_KEY"]
-            if "DATABASE_URL" in original_env:
-                del original_env["DATABASE_URL"]
-            
+        env = {
+            "ALPACA_SECRET_KEY": "test_secret",
+            "DATABASE_URL": "postgresql://user:pass@host/db"
+        }
+        with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(SystemExit) as context:
                 validate_configs()
-            
             self.assertEqual(context.exception.code, 1)
-        finally:
-            os.environ.clear()
-            os.environ.update(original_env)
 
     def test_valid_keys_all_present(self):
         original_env = os.environ.copy()
@@ -92,20 +66,15 @@ class TestConfigGatekeeper(unittest.TestCase):
             os.environ.update(original_env)
 
     def test_missing_environment_variable_message_format(self):
-        original_env = os.environ.copy()
-        
-        try:
-            if "DATABASE_URL" in original_env:
-                del original_env["DATABASE_URL"]
-            
-            try:
-                with self.assertRaises(SystemExit):
-                    validate_configs()
-            except SystemExit:
-                pass
-        finally:
-            os.environ.clear()
-            os.environ.update(original_env)
+        env = {
+            "ADANOS_API_KEY": "test_key",
+            "ALPACA_API_KEY": "test_key",
+            "ALPACA_SECRET_KEY": "test_secret"
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as context:
+                validate_configs()
+            self.assertEqual(context.exception.code, 1)
 
     def test_config_validation_is_idempotent(self):
         original_env = os.environ.copy()
