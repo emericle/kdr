@@ -137,6 +137,51 @@ class DatabaseManager:
         finally:
             self.connection.close(session)
 
+    def get_historical_market_data(
+        self,
+        symbol: str,
+        start_time: Optional[datetime] = None,
+        limit: int = 2000
+    ) -> List[dict]:
+        """Retrieves historical market data / bars for a symbol since start_time."""
+        session = self.connection.get_session()
+        if not session:
+            return []
+        try:
+            query = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper()
+            )
+            if start_time is not None:
+                query = query.filter(MarketDataModel.timestamp >= start_time)
+            query = query.order_by(MarketDataModel.timestamp.asc())
+            if limit:
+                # If limited, take latest matching records ordered ascending
+                records = query.all()
+                if len(records) > limit:
+                    records = records[-limit:]
+            else:
+                records = query.all()
+
+            return [
+                {
+                    "symbol": r.symbol,
+                    "timestamp": r.timestamp.timestamp() if isinstance(r.timestamp, datetime) else r.timestamp,
+                    "price": float(r.close if r.close is not None else r.open or 0.0),
+                    "open": float(r.open or 0.0),
+                    "high": float(r.high or 0.0),
+                    "low": float(r.low or 0.0),
+                    "close": float(r.close or 0.0),
+                    "volume": float(r.volume or 0.0),
+                    "time_str": r.timestamp.strftime("%H:%M:%S") if isinstance(r.timestamp, datetime) else str(r.timestamp)
+                }
+                for r in records
+            ]
+        except Exception as e:
+            logger.error("Error retrieving historical market data for %s: %s", symbol, e)
+            return []
+        finally:
+            self.connection.close(session)
+
     def get_model_weights(self, symbol: str):
         """Retrieves model weights for a specific symbol."""
         session = self.connection.get_session()

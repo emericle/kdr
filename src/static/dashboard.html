@@ -623,7 +623,7 @@
                         <div class="chart-controls">
                             <div class="control-group">
                                 <label class="control-label">Duration:</label>
-                                <select v-model="selectedDuration" @change="updateChart" class="duration-select">
+                                <select v-model="selectedDuration" @change="onDurationChange" class="duration-select">
                                     <option value="1h">1 Hour</option>
                                     <option value="24h">24 Hours</option>
                                     <option value="5d">5 Days</option>
@@ -635,11 +635,11 @@
                             <div class="control-group">
                                 <label class="control-label">Moving Averages:</label>
                                 <label class="checkbox-label">
-                                    <input type="checkbox" v-model="show200DayMA">
+                                    <input type="checkbox" v-model="show200DayMA" @change="initChart">
                                     <span>200-Day</span>
                                 </label>
                                 <label class="checkbox-label">
-                                    <input type="checkbox" v-model="show50DayMA">
+                                    <input type="checkbox" v-model="show50DayMA" @change="initChart">
                                     <span>50-Day</span>
                                 </label>
                             </div>
@@ -706,7 +706,7 @@
                 const decisionsMap = reactive({});
                 const tickHistoryMap = reactive({});
                 const selectedSymbol = ref(null);
-                const selectedDuration = ref('1h');
+                const selectedDuration = ref('24h');
                 const show200DayMA = ref(false);
                 const show50DayMA = ref(false);
 
@@ -782,7 +782,7 @@
                         startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
                     }
                     
-                    return startDate.toISOString();
+                    return startDate ? startDate.getTime() : 0;
                 }
 
                 function calculateMovingAverages(dataPoints) {
@@ -859,9 +859,10 @@
                                 if (!lastItem || lastItem.price !== symObj.currentPrice) {
                                     hist.push({
                                         time: data.time_str || new Date().toLocaleTimeString(),
-                                        price: symObj.currentPrice
+                                        price: symObj.currentPrice,
+                                        timestamp: data.timestamp ? data.timestamp * 1000 : Date.now()
                                     });
-                                    if (hist.length > 50) hist.shift();
+                                    if (hist.length > 500) hist.shift();
                                 }
                             }
                         });
@@ -886,17 +887,17 @@
                     }
                 }
 
-                async function selectSymbol(symbol) {
-                    selectedSymbol.value = symbol;
-                    // Fetch recent history via REST to populate chart immediately
+                async function fetchSymbolData(symbol) {
                     try {
-                        const res = await fetch(`/api/symbols/${symbol}`);
+                        const duration = selectedDuration.value;
+                        const res = await fetch(`/api/symbols/${symbol}?duration=${duration}`);
                         if (res.ok) {
                             const detail = await res.json();
                             if (detail.ticks && detail.ticks.length) {
                                 tickHistoryMap[symbol] = detail.ticks.map(t => ({
                                     time: t.time_str,
-                                    price: t.price
+                                    price: t.price,
+                                    timestamp: t.timestamp ? (t.timestamp < 1e11 ? t.timestamp * 1000 : t.timestamp) : Date.now()
                                 }));
                             }
                             if (detail.decisions && detail.decisions.length) {
@@ -906,9 +907,21 @@
                     } catch (e) {
                         console.warn('Could not fetch detail from REST endpoint:', e);
                     }
+                }
 
+                async function selectSymbol(symbol) {
+                    selectedSymbol.value = symbol;
+                    // Fetch recent / historical data from REST endpoint
+                    await fetchSymbolData(symbol);
                     await nextTick();
                     initChart();
+                }
+
+                async function onDurationChange() {
+                    if (selectedSymbol.value) {
+                        await fetchSymbolData(selectedSymbol.value);
+                        initChart();
+                    }
                 }
 
                 function clearSelection() {
@@ -917,6 +930,15 @@
                         chartInstance = null;
                     }
                     selectedSymbol.value = null;
+                }
+
+                function getFilteredHistory(hist) {
+                    const startTs = getDurationRange();
+                    if (!startTs) return hist;
+                    return hist.filter(point => {
+                        const ts = point.timestamp || (point.time ? new Date(point.time).getTime() : 0);
+                        return !ts || ts >= startTs;
+                    });
                 }
 
                 function initChart() {
@@ -931,11 +953,7 @@
                     const hist = tickHistoryMap[sym] || [];
 
                     // Filter by duration
-                    const durationRange = getDurationRange();
-                    const filteredHistory = hist.filter(point => {
-                        const pointTime = new Date(point.time);
-                        return pointTime >= new Date(durationRange);
-                    });
+                    const filteredHistory = getFilteredHistory(hist);
 
                     const labels = filteredHistory.map(h => h.time);
                     const prices = filteredHistory.map(h => h.price);
@@ -1051,11 +1069,7 @@
                     if (!hist.length) return;
 
                     // Filter by duration and update chart data
-                    const durationRange = getDurationRange();
-                    const filteredHistory = hist.filter(point => {
-                        const pointTime = new Date(point.time);
-                        return pointTime >= new Date(durationRange);
-                    });
+                    const filteredHistory = getFilteredHistory(hist);
 
                     chartInstance.data.labels = filteredHistory.map(h => h.time);
                     chartInstance.data.datasets[0].data = filteredHistory.map(h => h.price);
@@ -1086,6 +1100,11 @@
                     lastTimeStr,
                     symbols,
                     selectedSymbol,
+                    selectedDuration,
+                    show200DayMA,
+                    show50DayMA,
+                    onDurationChange,
+                    initChart,
                     activeSymbolData,
                     activeDecision,
                     symbolDecisions,

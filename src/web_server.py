@@ -14,7 +14,7 @@ import threading
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -230,6 +230,19 @@ class DecisionBuffer:
 
 market_buffer = MarketDataBuffer()
 decision_buffer = DecisionBuffer()
+_db_manager_instance: Optional[Any] = None
+
+
+def get_db_manager():
+    """Lazily instantiate or retrieve DatabaseManager."""
+    global _db_manager_instance
+    if _db_manager_instance is None:
+        try:
+            from src.database import DatabaseManager
+            _db_manager_instance = DatabaseManager()
+        except Exception as e:
+            logger.debug("DatabaseManager not initialized in web_server: %s", e)
+    return _db_manager_instance
 
 
 def compute_recommendation(symbol: str) -> Dict[str, Any]:
@@ -420,21 +433,84 @@ async def get_symbols():
 
 
 @app.get("/api/symbols/{symbol}")
-async def get_symbol_detail(symbol: str):
+async def get_symbol_detail(
+    symbol: str,
+    duration: Optional[str] = "24h",
+    limit: Optional[int] = 1000
+):
     symbol = symbol.upper()
     summary = market_buffer.get_summary(symbol)
-    ticks = market_buffer.get_ticks(symbol, limit=200)
+
+    # Determine start_time based on requested duration window
+    now = datetime.now()
+    start_time: Optional[datetime] = None
+    if duration == "1h":
+        start_time = now - timedelta(hours=1)
+    elif duration == "24h":
+        start_time = now - timedelta(hours=24)
+    elif duration == "5d":
+        start_time = now - timedelta(days=5)
+    elif duration == "30d":
+        start_time = now - timedelta(days=30)
+    elif duration == "1y":
+        start_time = now - timedelta(days=365)
+    elif duration == "ytd":
+        start_time = datetime(now.year, 1, 1)
+
+    historical_ticks = []
+    db = get_db_manager()
+    if db and hasattr(db, "get_historical_market_data"):
+        try:
+            historical_ticks = db.get_historical_market_data(
+                symbol,
+                start_time=start_time,
+                limit=limit or 1000
+            )
+        except Exception as db_err:
+            logger.debug("Could not query historical market data from db: %s", db_err)
+
+    # In-memory buffer ticks
+    buffer_ticks = market_buffer.get_ticks(symbol, limit=limit or 500)
+    if start_time is not None:
+        start_ts = start_time.timestamp()
+        buffer_ticks = [t for t in buffer_ticks if t.get("timestamp", 0) >= start_ts]
+
+    # Combine historical db data and in-memory buffer ticks without duplicates
+    # Use symbol + timestamp or unique ID as key
+    combined_dict = {}
+    for idx, t in enumerate(historical_ticks):
+        ts = t.get("timestamp", 0)
+        combined_dict[f"hist_{idx}_{ts}"] = t
+    for idx, t in enumerate(buffer_ticks):
+        ts = t.get("timestamp", 0)
+        # Avoid duplicate if same symbol and approximately same timestamp and price
+        duplicate = any(
+            abs(h.get("timestamp", 0) - ts) < 0.5 and h.get("price") == t.get("price")
+            for h in historical_ticks
+        )
+        if not duplicate:
+            combined_dict[f"buf_{idx}_{ts}"] = t
+
+    all_ticks = sorted(combined_dict.values(), key=lambda x: x.get("timestamp", 0))
+    if limit and len(all_ticks) > limit:
+        all_ticks = all_ticks[-limit:]
+
     decision = compute_recommendation(symbol)
     decisions_history = decision_buffer.get_history(symbol, limit=20)
+
+    # Compute moving averages (50-day and 200-day) if enough data
+    prices = [t.get("price", 0.0) for t in all_ticks]
+    ma_50 = round(sum(prices[-50:]) / 50.0, 2) if len(prices) >= 50 else (prices[-1] if prices else 0.0)
+    ma_200 = round(sum(prices[-200:]) / 200.0, 2) if len(prices) >= 200 else (prices[-1] if prices else 0.0)
 
     return JSONResponse({
         "summary": summary,
         "recommendation": decision,
-        "ticks": ticks,
+        "ticks": all_ticks,
         "decisions": decisions_history,
         "moving_averages": {
-            "200_day": 0.0,
-            "50_day": 0.0
+            "200_day": ma_200,
+            "50_day": ma_50
         }
     })
 
