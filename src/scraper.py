@@ -23,6 +23,13 @@ from dataclasses import dataclass
 from src.database import DatabaseManager
 from src.config_gatekeeper import validate_configs
 from src.state_mapper import StateMapper
+from src.symbols import (
+    DEFAULT_SYMBOLS,
+    normalize_symbols,
+    is_crypto_symbol,
+    to_alpaca_symbol,
+    from_alpaca_symbol
+)
 
 # Import web_server for real-time data streaming
 try:
@@ -175,7 +182,7 @@ class AlpacaStreamProcessor:
     ):
         self.db_manager = db_manager
         self.state_mapper = state_mapper
-        self.symbols: List[str] = [s.upper() for s in (symbols or ["AAPL", "TSLA"])]
+        self.symbols: List[str] = normalize_symbols(symbols, default=DEFAULT_SYMBOLS)
         self.api_key = api_key or os.getenv("ALPACA_API_KEY", "")
         self.api_secret = api_secret or os.getenv("ALPACA_SECRET_KEY", "")
         self.base_url = base_url or os.getenv("ALPACA_BASE_URL", "")
@@ -216,9 +223,10 @@ class AlpacaStreamProcessor:
             if not symbol:
                 return None
 
+            canonical_symbol = from_alpaca_symbol(str(symbol).upper())
             parsed_ts = DataStreamBuffer._parse_timestamp(ts)
             return {
-                'symbol': str(symbol).upper(),
+                'symbol': canonical_symbol,
                 'price': float(price) if price is not None else None,
                 'size': float(size) if size is not None else 0.0,
                 'open': float(open_p) if open_p is not None else None,
@@ -317,11 +325,37 @@ class AlpacaStreamProcessor:
                 self.data_queue.put((sym, bar))
         return ready_bars
 
+    def _fetch_crypto_snapshot(self) -> None:
+        """Fetches latest crypto trades from Alpaca REST to guarantee real-time BTC data."""
+        crypto_syms = [s for s in self.symbols if is_crypto_symbol(s)]
+        if not crypto_syms or not (self.api_key and self.api_secret):
+            return
+        try:
+            from alpaca_trade_api.rest import REST
+            rest_client = REST(self.api_key, self.api_secret, self.base_url or None)
+            alpaca_syms = [to_alpaca_symbol(s) for s in crypto_syms]
+            trades = rest_client.get_latest_crypto_trades(alpaca_syms)
+            for alpaca_s, t in trades.items():
+                app_s = from_alpaca_symbol(alpaca_s)
+                tick = {
+                    'symbol': app_s,
+                    'price': float(t.price),
+                    'size': float(t.size or 0.0),
+                    'timestamp': t.timestamp
+                }
+                self.handle_trade(tick)
+        except Exception as e:
+            logger.debug("Crypto snapshot fetch error: %s", e)
+
     def _flusher_loop(self) -> None:
-        """Background thread loop that flushes ready bars every second."""
+        """Background thread loop that flushes ready bars every second and refreshes crypto ticks."""
+        last_crypto_fetch = 0.0
         while self.running:
             try:
                 self.flush_ready_bars()
+                if time.time() - last_crypto_fetch >= 3.0:
+                    self._fetch_crypto_snapshot()
+                    last_crypto_fetch = time.time()
             except Exception as e:
                 logger.debug("Flusher loop error: %s", e)
             time.sleep(1)
@@ -345,7 +379,12 @@ class AlpacaStreamProcessor:
             }
             if self.base_url:
                 kwargs["base_url"] = self.base_url
-            return AlpacaTradeStream(**kwargs)
+            client = AlpacaTradeStream(**kwargs)
+            # Patch outdated v1beta2 crypto endpoint in alpaca_trade_api to active v1beta3
+            if hasattr(client, "_crypto_ws") and hasattr(client._crypto_ws, "_endpoint"):
+                if "v1beta2" in str(client._crypto_ws._endpoint):
+                    client._crypto_ws._endpoint = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
+            return client
         except Exception as e:
             logger.warning("Failed to initialize Alpaca Stream client: %s", e)
             return None
@@ -364,15 +403,28 @@ class AlpacaStreamProcessor:
         logger.info("Alpaca Stream Processor started.")
         logger.info("State mapper initialized for domain state mapping")
 
+        # Fetch initial snapshot for crypto assets
+        self._fetch_crypto_snapshot()
+
         if self.stream_client is None:
             self.stream_client = self._init_stream_client()
 
         if self.stream_client:
             try:
-                if hasattr(self.stream_client, "subscribe_trades"):
-                    self.stream_client.subscribe_trades(self._async_handle_trade, *self.symbols)
-                if hasattr(self.stream_client, "subscribe_bars"):
-                    self.stream_client.subscribe_bars(self._async_handle_bar, *self.symbols)
+                stock_syms = [s for s in self.symbols if not is_crypto_symbol(s)]
+                crypto_syms = [to_alpaca_symbol(s) for s in self.symbols if is_crypto_symbol(s)]
+
+                if stock_syms:
+                    if hasattr(self.stream_client, "subscribe_trades"):
+                        self.stream_client.subscribe_trades(self._async_handle_trade, *stock_syms)
+                    if hasattr(self.stream_client, "subscribe_bars"):
+                        self.stream_client.subscribe_bars(self._async_handle_bar, *stock_syms)
+
+                if crypto_syms:
+                    if hasattr(self.stream_client, "subscribe_crypto_trades"):
+                        self.stream_client.subscribe_crypto_trades(self._async_handle_trade, *crypto_syms)
+                    if hasattr(self.stream_client, "subscribe_crypto_bars"):
+                        self.stream_client.subscribe_crypto_bars(self._async_handle_bar, *crypto_syms)
             except Exception as e:
                 logger.warning("Failed to subscribe stream client to %s: %s", self.symbols, e)
 
@@ -483,17 +535,6 @@ class DBWriterWorker(threading.Thread):
             logger.debug("Saving record for %s at %s", symbol, bar_data['timestamp'])
         # Database writing logic here...
 
-def normalize_symbols(symbols: Optional[Union[str, List[str]]]) -> List[str]:
-    """Helper to normalize string, comma-separated string, or list of symbols to uppercase."""
-    if not symbols:
-        return ["AAPL", "TSLA"]
-    if isinstance(symbols, str):
-        raw_list = symbols.split(",")
-    else:
-        raw_list = symbols
-    cleaned = [s.strip().upper() for s in raw_list if s and s.strip()]
-    return cleaned or ["AAPL", "TSLA"]
-
 def run_worker_threads(
     symbols: Optional[Union[str, List[str]]] = None,
     duration_seconds: Optional[float] = None,
@@ -516,7 +557,7 @@ def run_worker_threads(
     logger.info("Producer and Consumer threads initialized.")
     logger.info("Data pipeline ready: Alpaca → Adapter → Domain State → DB")
 
-    resolved_symbols = normalize_symbols(symbols)
+    resolved_symbols = normalize_symbols(symbols, default=DEFAULT_SYMBOLS)
 
     # Initialize dashboard web server in a separate thread
     if WEB_SERVER_AVAILABLE:
@@ -617,7 +658,7 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         '--symbols',
         type=str,
         default=None,
-        help='Comma-separated list of symbols (e.g. AAPL,TSLA,MSFT)'
+        help=f'Comma-separated list of symbols (default: {",".join(DEFAULT_SYMBOLS)})'
     )
     parser.add_argument(
         '--duration',

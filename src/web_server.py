@@ -477,7 +477,18 @@ _server_instance: Optional[uvicorn.Server] = None
 _server_thread: Optional[threading.Thread] = None
 
 
-def start_web_server_thread(host: str = "0.0.0.0", port: int = 8001) -> uvicorn.Server:
+def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def start_web_server_thread(host: str = "0.0.0.0", port: int = 8001) -> Optional[uvicorn.Server]:
     """
     Starts the FastAPI web server in a background daemon thread.
     Returns the running uvicorn.Server instance.
@@ -486,6 +497,10 @@ def start_web_server_thread(host: str = "0.0.0.0", port: int = 8001) -> uvicorn.
 
     if _server_thread is not None and _server_thread.is_alive():
         logger.info("Web server thread already running.")
+        return _server_instance
+
+    if not is_port_available(port, host):
+        logger.info("Port %d is already in use. Web server thread start skipped.", port)
         return _server_instance
 
     config = uvicorn.Config(
