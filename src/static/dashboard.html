@@ -941,6 +941,41 @@
                     });
                 }
 
+                function computeYAxisBounds(filteredHistory, ma200 = [], ma50 = []) {
+                    const values = [];
+                    filteredHistory.forEach(h => {
+                        if (typeof h.price === 'number' && !isNaN(h.price)) {
+                            values.push(h.price);
+                        }
+                    });
+                    ma200.forEach(v => {
+                        if (typeof v === 'number' && !isNaN(v) && v !== null) {
+                            values.push(v);
+                        }
+                    });
+                    ma50.forEach(v => {
+                        if (typeof v === 'number' && !isNaN(v) && v !== null) {
+                            values.push(v);
+                        }
+                    });
+
+                    if (!values.length) {
+                        return { min: undefined, max: undefined };
+                    }
+
+                    const minVal = Math.min(...values);
+                    const maxVal = Math.max(...values);
+
+                    // Add dynamic padding (e.g. 1.5% or at least 0.50) so ticks don't touch the top/bottom edges
+                    const spread = maxVal - minVal;
+                    const padding = spread > 0 ? spread * 0.05 : Math.max(minVal * 0.01, 0.5);
+
+                    return {
+                        min: Number(Math.max(0, minVal - padding).toFixed(2)),
+                        max: Number((maxVal + padding).toFixed(2))
+                    };
+                }
+
                 function initChart() {
                     const ctx = document.getElementById('tickChart');
                     if (!ctx) return;
@@ -965,6 +1000,7 @@
                     const ma50Color = '#f59e0b';
 
                     const { ma200, ma50 } = calculateMovingAverages(filteredHistory);
+                    const yBounds = computeYAxisBounds(filteredHistory, ma200, ma50);
 
                     const datasets = [{
                         label: `${sym} Price`,
@@ -1045,6 +1081,8 @@
                                     }
                                 },
                                 y: {
+                                    min: yBounds.min,
+                                    max: yBounds.max,
                                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                                     ticks: {
                                         color: '#64748b',
@@ -1086,6 +1124,13 @@
                     }
                     if (chartInstance.data.datasets.length > 2) {
                         chartInstance.data.datasets[2].data = ma50;
+                    }
+
+                    // Dynamically scale y-axis bounds based on min/max of current range
+                    const yBounds = computeYAxisBounds(filteredHistory, ma200, ma50);
+                    if (chartInstance.options.scales && chartInstance.options.scales.y) {
+                        chartInstance.options.scales.y.min = yBounds.min;
+                        chartInstance.options.scales.y.max = yBounds.max;
                     }
 
                     chartInstance.update('none');
