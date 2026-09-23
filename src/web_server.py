@@ -431,7 +431,11 @@ async def get_symbol_detail(symbol: str):
         "summary": summary,
         "recommendation": decision,
         "ticks": ticks,
-        "decisions": decisions_history
+        "decisions": decisions_history,
+        "moving_averages": {
+            "200_day": 0.0,
+            "50_day": 0.0
+        }
     })
 
 

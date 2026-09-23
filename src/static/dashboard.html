@@ -334,6 +334,65 @@
             width: 100%;
         }
 
+        .chart-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            background-color: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .control-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .duration-select {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        .duration-select:hover {
+            border-color: var(--color-accent);
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .checkbox-label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--color-accent);
+        }
+
+        .checkbox-label span {
+            font-weight: 500;
+        }
+
         .info-sidebar {
             display: flex;
             flex-direction: column;
@@ -561,6 +620,31 @@
                             </span>
                         </div>
 
+                        <div class="chart-controls">
+                            <div class="control-group">
+                                <label class="control-label">Duration:</label>
+                                <select v-model="selectedDuration" @change="updateChart" class="duration-select">
+                                    <option value="1h">1 Hour</option>
+                                    <option value="24h">24 Hours</option>
+                                    <option value="5d">5 Days</option>
+                                    <option value="30d">30 Days</option>
+                                    <option value="1y">1 Year</option>
+                                    <option value="ytd">YTD</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Moving Averages:</label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" v-model="show200DayMA">
+                                    <span>200-Day</span>
+                                </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" v-model="show50DayMA">
+                                    <span>50-Day</span>
+                                </label>
+                            </div>
+                        </div>
+
                         <div class="canvas-wrap">
                             <canvas id="tickChart"></canvas>
                         </div>
@@ -622,6 +706,9 @@
                 const decisionsMap = reactive({});
                 const tickHistoryMap = reactive({});
                 const selectedSymbol = ref(null);
+                const selectedDuration = ref('1h');
+                const show200DayMA = ref(false);
+                const show50DayMA = ref(false);
 
                 let chartInstance = null;
                 let ws = null;
@@ -673,6 +760,51 @@
                     if (val > 0) return 'positive';
                     if (val < 0) return 'negative';
                     return 'neutral';
+                }
+
+                function getDurationRange() {
+                    const now = new Date();
+                    const duration = selectedDuration.value;
+                    
+                    let startDate;
+                    
+                    if (duration === 'ytd') {
+                        startDate = new Date(now.getFullYear(), 0, 1);
+                    } else if (duration === '1h') {
+                        startDate = new Date(now.getTime() - 60 * 60 * 1000);
+                    } else if (duration === '24h') {
+                        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                    } else if (duration === '5d') {
+                        startDate = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000);
+                    } else if (duration === '30d') {
+                        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                    } else if (duration === '1y') {
+                        startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+                    }
+                    
+                    return startDate.toISOString();
+                }
+
+                function calculateMovingAverages(dataPoints) {
+                    const ma200 = show200DayMA.value ? calculateMA(dataPoints, 200) : [];
+                    const ma50 = show50DayMA.value ? calculateMA(dataPoints, 50) : [];
+                    return { ma200, ma50 };
+                }
+
+                function calculateMA(dataPoints, period) {
+                    const result = [];
+                    for (let i = 0; i < dataPoints.length; i++) {
+                        if (i < period - 1) {
+                            result.push(null);
+                        } else {
+                            let sum = 0;
+                            for (let j = 0; j < period; j++) {
+                                sum += dataPoints[i - j].price;
+                            }
+                            result.push(sum / period);
+                        }
+                    }
+                    return result;
                 }
 
                 function connectWebSocket() {
@@ -797,53 +929,113 @@
 
                     const sym = selectedSymbol.value;
                     const hist = tickHistoryMap[sym] || [];
-                    const labels = hist.map(h => h.time);
-                    const prices = hist.map(h => h.price);
+
+                    // Filter by duration
+                    const durationRange = getDurationRange();
+                    const filteredHistory = hist.filter(point => {
+                        const pointTime = new Date(point.time);
+                        return pointTime >= new Date(durationRange);
+                    });
+
+                    const labels = filteredHistory.map(h => h.time);
+                    const prices = filteredHistory.map(h => h.price);
 
                     const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
                     const strokeColor = isUp ? '#10b981' : '#ef4444';
                     const fillColor = isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+                    const ma200Color = '#3b82f6';
+                    const ma50Color = '#f59e0b';
+
+                    const { ma200, ma50 } = calculateMovingAverages(filteredHistory);
+
+                    const datasets = [{
+                        label: `${sym} Price`,
+                        data: prices,
+                        borderColor: strokeColor,
+                        backgroundColor: fillColor,
+                        fill: true,
+                        tension: 0.25,
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        borderWidth: 2
+                    }];
+
+                    if (ma200.length > 0) {
+                        datasets.push({
+                            label: '200-Day MA',
+                            data: ma200,
+                            borderColor: ma200Color,
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: false,
+                            tension: 0.1
+                        });
+                    }
+
+                    if (ma50.length > 0) {
+                        datasets.push({
+                            label: '50-Day MA',
+                            data: ma50,
+                            borderColor: ma50Color,
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: false,
+                            tension: 0.1
+                        });
+                    }
 
                     chartInstance = new Chart(ctx, {
                         type: 'line',
                         data: {
                             labels: labels.length ? labels : ['Starting...'],
-                            datasets: [{
-                                label: `${sym} Price`,
-                                data: prices.length ? prices : [activeSymbolData.value.currentPrice || 0],
-                                borderColor: strokeColor,
-                                backgroundColor: fillColor,
-                                fill: true,
-                                tension: 0.25,
-                                pointRadius: 3,
-                                pointHoverRadius: 6,
-                                borderWidth: 2
-                            }]
+                            datasets: datasets
                         },
                         options: {
                             responsive: true,
                             maintainAspectRatio: false,
                             animation: { duration: 300 },
                             plugins: {
-                                legend: { display: false },
+                                legend: {
+                                    display: true,
+                                    labels: {
+                                        color: '#94a3b8',
+                                        usePointStyle: true,
+                                        padding: 20
+                                    }
+                                },
                                 tooltip: {
                                     mode: 'index',
                                     intersect: false,
                                     callbacks: {
-                                        label: (context) => `$${Number(context.parsed.y).toFixed(2)}`
+                                        label: (context) => {
+                                            if (context.dataset.label.includes('MA')) {
+                                                return `${context.dataset.label}: $${Number(context.parsed.y).toFixed(2)}`;
+                                            }
+                                            return `${sym} Price: $${Number(context.parsed.y).toFixed(2)}`;
+                                        }
                                     }
                                 }
                             },
                             scales: {
                                 x: {
                                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                    ticks: { color: '#64748b', maxRotation: 0 }
+                                    ticks: { color: '#64748b', maxRotation: 0 },
+                                    title: {
+                                        display: true,
+                                        text: 'Time',
+                                        color: '#64748b'
+                                    }
                                 },
                                 y: {
                                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                                     ticks: {
                                         color: '#64748b',
                                         callback: (value) => `$${value.toFixed(2)}`
+                                    },
+                                    title: {
+                                        display: true,
+                                        text: 'Price',
+                                        color: '#64748b'
                                     }
                                 }
                             }
@@ -858,12 +1050,29 @@
                     const hist = tickHistoryMap[sym] || [];
                     if (!hist.length) return;
 
-                    chartInstance.data.labels = hist.map(h => h.time);
-                    chartInstance.data.datasets[0].data = hist.map(h => h.price);
+                    // Filter by duration and update chart data
+                    const durationRange = getDurationRange();
+                    const filteredHistory = hist.filter(point => {
+                        const pointTime = new Date(point.time);
+                        return pointTime >= new Date(durationRange);
+                    });
+
+                    chartInstance.data.labels = filteredHistory.map(h => h.time);
+                    chartInstance.data.datasets[0].data = filteredHistory.map(h => h.price);
 
                     const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
                     chartInstance.data.datasets[0].borderColor = isUp ? '#10b981' : '#ef4444';
                     chartInstance.data.datasets[0].backgroundColor = isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+
+                    // Update moving averages
+                    const { ma200, ma50 } = calculateMovingAverages(filteredHistory);
+
+                    if (chartInstance.data.datasets.length > 1) {
+                        chartInstance.data.datasets[1].data = ma200;
+                    }
+                    if (chartInstance.data.datasets.length > 2) {
+                        chartInstance.data.datasets[2].data = ma50;
+                    }
 
                     chartInstance.update('none');
                 }
