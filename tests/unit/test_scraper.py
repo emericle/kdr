@@ -1179,3 +1179,27 @@ class TestAlpacaStreamProcessorEdgeCases:
         
         assert processor.db_manager == mock_db
         assert processor.buffer is not None
+
+    def test_extract_market_payload_trade_with_list_conditions(self):
+        """Test _extract_market_payload doesn't fail when conditions ('c') is a list."""
+        mock_db = MagicMock()
+        mock_state_mapper = MagicMock()
+        processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
+
+        # Alpaca crypto trade raw payload format with conditions list 'c': ['C']
+        raw_msg = {
+            'T': 't',
+            'i': 9687,
+            'S': 'BTC/USD',
+            'p': 65000.5,
+            's': 0.125,
+            't': 1720000000,
+            'c': ['C']
+        }
+
+        payload = processor._extract_market_payload(raw_msg)
+        assert payload is not None
+        assert payload['symbol'] == 'BTC'
+        assert payload['price'] == 65000.5
+        assert payload['size'] == 0.125
+        assert payload['close'] is None

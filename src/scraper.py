@@ -198,6 +198,15 @@ class AlpacaStreamProcessor:
         """Unified normalization helper for raw tick or bar messages."""
         if msg is None:
             return None
+
+        def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
+            if val is None or isinstance(val, (list, tuple, dict, set)):
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
         try:
             if isinstance(msg, dict):
                 symbol = msg.get('symbol') or msg.get('S')
@@ -206,7 +215,15 @@ class AlpacaStreamProcessor:
                 open_p = msg.get('open') if 'open' in msg else msg.get('o')
                 high_p = msg.get('high') if 'high' in msg else msg.get('h')
                 low_p = msg.get('low') if 'low' in msg else msg.get('l')
-                close_p = msg.get('close') if 'close' in msg else msg.get('c')
+                # Note: In Alpaca trade messages, 'c' is trade conditions (list of strings).
+                # Only treat 'c' as close price if 'T' is a bar ('b', 'u', 'd') or close is explicitly present.
+                msg_type = msg.get('T')
+                if 'close' in msg:
+                    close_p = msg.get('close')
+                elif msg_type in ('b', 'u', 'd') or ('o' in msg and 'h' in msg and 'l' in msg):
+                    close_p = msg.get('c')
+                else:
+                    close_p = None
                 vol = msg.get('volume') if 'volume' in msg else msg.get('v')
                 ts = msg.get('timestamp') or msg.get('t')
             else:
@@ -227,13 +244,13 @@ class AlpacaStreamProcessor:
             parsed_ts = DataStreamBuffer._parse_timestamp(ts)
             return {
                 'symbol': canonical_symbol,
-                'price': float(price) if price is not None else None,
-                'size': float(size) if size is not None else 0.0,
-                'open': float(open_p) if open_p is not None else None,
-                'high': float(high_p) if high_p is not None else None,
-                'low': float(low_p) if low_p is not None else None,
-                'close': float(close_p) if close_p is not None else None,
-                'volume': float(vol) if vol is not None else float(size or 0.0),
+                'price': safe_float(price),
+                'size': safe_float(size, 0.0),
+                'open': safe_float(open_p),
+                'high': safe_float(high_p),
+                'low': safe_float(low_p),
+                'close': safe_float(close_p),
+                'volume': safe_float(vol, safe_float(size, 0.0)),
                 'timestamp': parsed_ts
             }
         except Exception as e:

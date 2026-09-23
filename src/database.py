@@ -41,7 +41,9 @@ class DatabaseConnection:
             self.engine = create_engine(
                 self.db_url,
                 poolclass=QueuePool,
-                connect_args={"connect_timeout": 5}
+                pool_pre_ping=True,
+                pool_recycle=300,
+                connect_args={"connect_timeout": 3}
             )
         
         self.session_factory = sessionmaker(bind=self.engine)
@@ -130,10 +132,11 @@ class DatabaseManager:
             session.commit()
             logger.info("Database commit successful.")
         except Exception as e:
-            logger.error("CRITICAL ERROR in DB write: %s", e)
-            import traceback
-            logger.debug(traceback.format_exc())
-            session.rollback()
+            logger.error("Error writing market data to database: %s", e)
+            try:
+                session.rollback()
+            except Exception:
+                pass
         finally:
             self.connection.close(session)
 
