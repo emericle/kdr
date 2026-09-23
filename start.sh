@@ -35,6 +35,15 @@ echo -e "${GREEN}✓ Python version: $PYTHON_VERSION${NC}"
 echo ""
 echo -e "${YELLOW}[2/4]${NC} Checking environment variables..."
 
+# Load .env file if present
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    echo -e "${YELLOW}Loading environment from .env file...${NC}"
+    set -a
+    # Source .env without failing if comments/formatting exist
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
 REQUIRED_VARS=(
     "ADANOS_API_KEY"
     "ALPACA_API_KEY"
@@ -90,7 +99,7 @@ echo -e "${GREEN}✓ Dependencies installed${NC}"
 
 # Step 4: Run the Process
 echo ""
-echo -e "${YELLOW}[4/4]${NC} Starting KDR process..."
+echo -e "${YELLOW}[4/4]${NC} Starting KDR services..."
 
 # Parse arguments
 ARGS=()
@@ -107,12 +116,16 @@ for arg in "$@"; do
 done
 
 echo ""
-echo -e "${GREEN}═══════════════════════════════════════════${NC}"
-echo -e "${GREEN}Starting KDR Data Ingestion Pipeline${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════${NC}"
+echo -e "${GREEN}══════════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
+echo -e "${GREEN}══════════════════════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${GREEN}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
+echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
 echo ""
 
-# Run the main script
+# Run the main process
 # Set PYTHONPATH to include the project root for module imports
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-python src/scraper.py "${ARGS[@]}"
+source .venv/bin/activate
+exec python src/scraper.py "${ARGS[@]}"

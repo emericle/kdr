@@ -24,6 +24,21 @@ from src.database import DatabaseManager
 from src.config_gatekeeper import validate_configs
 from src.state_mapper import StateMapper
 
+# Import web_server for real-time data streaming
+try:
+    from src.web_server import (
+        market_buffer,
+        decision_buffer,
+        compute_recommendation,
+        start_web_server_thread,
+        stop_web_server
+    )
+    WEB_SERVER_AVAILABLE = True
+except ImportError:
+    WEB_SERVER_AVAILABLE = False
+    market_buffer = None
+    decision_buffer = None
+
 try:
     from alpaca_trade_api.stream import Stream as AlpacaTradeStream
 except ImportError:
@@ -240,6 +255,17 @@ class AlpacaStreamProcessor:
         if DEBUG_MODE:
             logger.debug("Received tick for %s: price=%s, size=%s", symbol, parsed['price'], parsed['size'])
 
+        # Push to web server's market buffer for real-time streaming
+        if WEB_SERVER_AVAILABLE and market_buffer:
+            try:
+                market_buffer.add_tick(
+                    symbol=symbol,
+                    price=parsed['price'],
+                    size=parsed['size'] if 'size' in parsed else None
+                )
+            except Exception as e:
+                logger.debug("Error pushing to market buffer: %s", e)
+
         if self.state_mapper:
             try:
                 self.state_mapper.map_tick_data_to_state([parsed])
@@ -267,6 +293,17 @@ class AlpacaStreamProcessor:
         }
         if self.data_queue:
             self.data_queue.put((bar_dict['symbol'], bar_dict))
+
+        # Push to web server's market buffer
+        if WEB_SERVER_AVAILABLE and market_buffer:
+            try:
+                market_buffer.add_tick(
+                    symbol=bar_dict['symbol'],
+                    price=bar_dict['close'],
+                    size=bar_dict['volume']
+                )
+            except Exception as e:
+                logger.debug("Error pushing bar to market buffer: %s", e)
 
     async def _async_handle_bar(self, bar: Any) -> None:
         """Async callback for Alpaca websocket stream bar subscriptions."""
@@ -414,6 +451,15 @@ class DBWriterWorker(threading.Thread):
                             'timestamp': bar_data['timestamp']
                         }
                         self.state_mapper.map_tick_data_to_state([tick_data])
+                        if WEB_SERVER_AVAILABLE and decision_buffer:
+                            rec = compute_recommendation(symbol)
+                            decision_buffer.add_decision(
+                                symbol=symbol,
+                                action=rec["action"],
+                                confidence=rec["confidence"],
+                                reasoning=rec["reasoning"],
+                                timestamp=bar_data['timestamp']
+                            )
                     except Exception as map_error:
                         logger.debug(f"Mapping tick to state: {map_error}")
 
@@ -471,6 +517,18 @@ def run_worker_threads(
     logger.info("Data pipeline ready: Alpaca → Adapter → Domain State → DB")
 
     resolved_symbols = normalize_symbols(symbols)
+
+    # Initialize dashboard web server in a separate thread
+    if WEB_SERVER_AVAILABLE:
+        try:
+            start_web_server_thread(host="0.0.0.0", port=8001)
+            logger.info("Real-time Dashboard available at: http://localhost:8001")
+            for sym in resolved_symbols:
+                if market_buffer and not market_buffer.get_latest_tick(sym):
+                    market_buffer.add_tick(sym, 0.0, 0.0)
+        except Exception as ws_err:
+            logger.warning("Could not start dashboard web server thread: %s", ws_err)
+
     processor = AlpacaStreamProcessor(
         db_manager=db_manager,
         state_mapper=state_mapper,
@@ -516,6 +574,13 @@ def run_worker_threads(
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutdown signal received.")
     finally:
+        # Stop web server thread
+        if WEB_SERVER_AVAILABLE:
+            try:
+                stop_web_server()
+            except Exception:
+                pass
+
         # Stop processor and worker
         if not mock_fallback:
             logger.info("Stopping stream processor...")

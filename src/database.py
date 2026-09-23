@@ -38,7 +38,11 @@ class DatabaseConnection:
         if "sqlite" in self.db_url:
             self.engine = create_engine(self.db_url)
         else:
-            self.engine = create_engine(self.db_url, poolclass=QueuePool)
+            self.engine = create_engine(
+                self.db_url,
+                poolclass=QueuePool,
+                connect_args={"connect_timeout": 5}
+            )
         
         self.session_factory = sessionmaker(bind=self.engine)
 

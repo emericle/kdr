@@ -7,6 +7,13 @@ import requests
 
 logger = logging.getLogger("TradingExecution")
 
+# Import web_server for decision streaming
+try:
+    from src.web_server import decision_buffer
+    WEB_SERVER_AVAILABLE = True
+except ImportError:
+    WEB_SERVER_AVAILABLE = False
+
 
 class PositionSizing:
     """
@@ -378,6 +385,21 @@ class TradingExecutor:
         if movement in ("HOLD", "NONE", None):
             return None
 
+        # Push to decision buffer
+        if WEB_SERVER_AVAILABLE and decision_buffer:
+            try:
+                from src.web_server import TradingDecision
+                decision = TradingDecision(
+                    symbol=symbol,
+                    action=movement,
+                    confidence=0.75,  # Default confidence
+                    reasoning=["Based on Bellman model"],
+                    timestamp=datetime.datetime.now()
+                )
+                decision_buffer.add_decision(decision)
+            except Exception as e:
+                logger.debug(f"Error pushing decision to buffer: {e}")
+
         total_value = portfolio_value if portfolio_value is not None else portfolio_cash + (current_shares * current_price)
 
         if movement == "BUY":
@@ -404,6 +426,21 @@ class TradingExecutor:
             if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
                 return None
 
+            # Push to decision buffer before creating order
+            if WEB_SERVER_AVAILABLE and decision_buffer:
+                try:
+                    from src.web_server import TradingDecision
+                    new_decision = TradingDecision(
+                        symbol=symbol,
+                        action="BUY",
+                        confidence=eval_res.get("adjusted_shares") / proposed_shares * 0.8,
+                        reasoning=["Bellman model recommends buy", "Current price within target range"],
+                        timestamp=datetime.datetime.now()
+                    )
+                    decision_buffer.add_decision(new_decision)
+                except Exception as e:
+                    logger.debug(f"Error pushing decision to buffer: {e}")
+
             return {
                 "symbol": symbol,
                 "side": "buy",
@@ -426,6 +463,21 @@ class TradingExecutor:
             )
             if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
                 return None
+
+            # Push to decision buffer
+            if WEB_SERVER_AVAILABLE and decision_buffer:
+                try:
+                    from src.web_server import TradingDecision
+                    new_decision = TradingDecision(
+                        symbol=symbol,
+                        action="SELL",
+                        confidence=0.75,
+                        reasoning=["Bellman model recommends sell", "Position target reached"],
+                        timestamp=datetime.datetime.now()
+                    )
+                    decision_buffer.add_decision(new_decision)
+                except Exception as e:
+                    logger.debug(f"Error pushing decision to buffer: {e}")
 
             return {
                 "symbol": symbol,

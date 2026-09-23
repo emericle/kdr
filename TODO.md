@@ -18,3 +18,7 @@
 ## 5. Testing & Verification
 - [x] **Expand Test Suite**: Add unit tests for the new model and sentiment modules.
 - [x] **Integration Testing**: Verify the full pipeline from data ingestion to trading decision.
+
+## 6. Development Infrastructure
+- [x] **Bin Scripts**: Create `bin/` directory with `local-start.sh` and `local-stop.sh` for local testing and validation.
+- [ ] **Documentation**: Update BIN.md with operational procedures and troubleshooting guide.

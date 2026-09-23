@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KDR Real-Time Market & Decision Monitor</title>
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0b0f19;
+            --bg-secondary: #131b2e;
+            --bg-card: #19233c;
+            --bg-card-hover: #223052;
+            --border-color: #2a3b61;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --color-buy: #10b981;
+            --color-buy-bg: rgba(16, 185, 129, 0.15);
+            --color-sell: #ef4444;
+            --color-sell-bg: rgba(239, 68, 68, 0.15);
+            --color-hold: #f59e0b;
+            --color-hold-bg: rgba(245, 158, 11, 0.15);
+            --color-accent: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        header {
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 14px 28px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-title h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            color: #ffffff;
+        }
+
+        .badge-live {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--color-buy);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-live.disconnected {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--color-sell);
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: currentColor;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        .header-meta {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        main {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 28px;
+        }
+
+        /* Summary Dashboard */
+        .summary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 24px;
+        }
+
+        .summary-header h2 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .summary-header p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 4px;
+        }
+
+        .symbols-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .symbol-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .symbol-card:hover {
+            background-color: var(--bg-card-hover);
+            transform: translateY(-2px);
+            border-color: var(--color-accent);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+
+        .card-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .symbol-name {
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+        }
+
+        .decision-badge {
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .decision-badge.BUY {
+            background-color: var(--color-buy-bg);
+            color: var(--color-buy);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .decision-badge.SELL {
+            background-color: var(--color-sell-bg);
+            color: var(--color-sell);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+
+        .decision-badge.HOLD {
+            background-color: var(--color-hold-bg);
+            color: var(--color-hold);
+            border: 1px solid rgba(245, 158, 11, 0.4);
+        }
+
+        .card-price-row {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .current-price {
+            font-size: 2rem;
+            font-weight: 800;
+            font-family: monospace;
+        }
+
+        .change-pct {
+            font-size: 1rem;
+            font-weight: 600;
+            font-family: monospace;
+        }
+
+        .change-pct.positive { color: var(--color-buy); }
+        .change-pct.negative { color: var(--color-sell); }
+        .change-pct.neutral { color: var(--text-secondary); }
+
+        .card-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            padding-top: 14px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            font-size: 0.8rem;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            margin-bottom: 2px;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+        }
+
+        .stat-val {
+            font-weight: 600;
+            font-family: monospace;
+            color: var(--text-secondary);
+        }
+
+        .card-footer {
+            margin-top: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        .click-hint {
+            color: var(--color-accent);
+            font-weight: 500;
+        }
+
+        /* Drill-Down View */
+        .drilldown-view {
+            animation: fadeIn 0.2s ease-in-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .back-btn {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 24px;
+            transition: all 0.15s ease;
+        }
+
+        .back-btn:hover {
+            background-color: var(--bg-card-hover);
+            border-color: var(--color-accent);
+        }
+
+        .drilldown-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 1024px) {
+            .drilldown-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .chart-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .chart-title-group h3 {
+            font-size: 1.8rem;
+            font-weight: 800;
+        }
+
+        .chart-price-large {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            margin-top: 4px;
+        }
+
+        .canvas-wrap {
+            position: relative;
+            height: 380px;
+            width: 100%;
+        }
+
+        .info-sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .decision-box {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .decision-box h4 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .decision-main {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .decision-action-huge {
+            font-size: 1.6rem;
+            font-weight: 900;
+            padding: 8px 18px;
+            border-radius: 8px;
+        }
+
+        .confidence-meter {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .confidence-val {
+            font-size: 1.4rem;
+            font-weight: 800;
+            font-family: monospace;
+        }
+
+        .reasoning-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .reasoning-list li {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            line-height: 1.4;
+        }
+
+        .reasoning-list li::before {
+            content: "•";
+            color: var(--color-accent);
+            font-weight: bold;
+        }
+
+        .history-box {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            flex-grow: 1;
+        }
+
+        .history-box h4 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background-color: rgba(255, 255, 255, 0.03);
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+
+        .history-time {
+            color: var(--text-muted);
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            background-color: var(--bg-card);
+            border: 1px dashed var(--border-color);
+            border-radius: 12px;
+        }
+
+        .empty-state h3 {
+            font-size: 1.3rem;
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Sticky Header -->
+        <header>
+            <div class="header-title">
+                <h1>KDR Financial Market Monitor</h1>
+                <span class="badge-live" :class="{ disconnected: !connected }">
+                    <span class="pulse-dot"></span>
+                    {{ connected ? 'REALTIME STREAMING' : 'DISCONNECTED - RECONNECTING...' }}
+                </span>
+            </div>
+            <div class="header-meta">
+                <span>Tracked Symbols: <strong>{{ symbols.length }}</strong></span>
+                <span>Last Signal: <strong>{{ lastTimeStr || '--:--:--' }}</strong></span>
+            </div>
+        </header>
+
+        <main>
+            <!-- Summary Dashboard View -->
+            <div v-if="!selectedSymbol">
+                <div class="summary-header">
+                    <div>
+                        <h2>Tracked Equity Portfolio</h2>
+                        <p>Live stream of incoming ticks and Bellman real-time decisions. Click any symbol to view interactive chart.</p>
+                    </div>
+                </div>
+
+                <!-- Symbols Grid -->
+                <div v-if="symbols.length > 0" class="symbols-grid">
+                    <div 
+                        v-for="item in symbols" 
+                        :key="item.symbol" 
+                        class="symbol-card"
+                        @click="selectSymbol(item.symbol)"
+                    >
+                        <div class="card-top">
+                            <span class="symbol-name">{{ item.symbol }}</span>
+                            <span class="decision-badge" :class="item.recommendation">
+                                {{ item.recommendation || 'HOLD' }}
+                            </span>
+                        </div>
+                        <div class="card-price-row">
+                            <span class="current-price">${{ formatPrice(item.currentPrice) }}</span>
+                            <span class="change-pct" :class="getChangeClass(item.changePercent)">
+                                {{ formatChange(item.changePercent) }}%
+                            </span>
+                        </div>
+                        <div class="card-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">High</span>
+                                <span class="stat-val">${{ formatPrice(item.high) }}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Low</span>
+                                <span class="stat-val">${{ formatPrice(item.low) }}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Volume</span>
+                                <span class="stat-val">{{ formatNumber(item.volume) }}</span>
+                            </div>
+                        </div>
+                        <div class="card-footer">
+                            <span>Confidence: {{ Math.round((item.confidence || 0.7) * 100) }}%</span>
+                            <span class="click-hint">View Chart →</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Empty State -->
+                <div v-else class="empty-state">
+                    <h3>Waiting for Market Stream...</h3>
+                    <p>Ticks will appear automatically as Alpaca Trade Stream or Scraper processes incoming trades.</p>
+                </div>
+            </div>
+
+            <!-- Drill-Down Symbol View -->
+            <div v-else class="drilldown-view">
+                <button class="back-btn" @click="clearSelection">
+                    ← Back to Portfolio Summary
+                </button>
+
+                <div class="drilldown-grid">
+                    <!-- Left: Interactive Chart -->
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <div class="chart-title-group">
+                                <h3>{{ activeSymbolData.symbol }} Real-Time Ticks</h3>
+                                <div class="chart-price-large">
+                                    <span class="current-price">${{ formatPrice(activeSymbolData.currentPrice) }}</span>
+                                    <span class="change-pct" :class="getChangeClass(activeSymbolData.changePercent)">
+                                        {{ formatChange(activeSymbolData.changePercent) }}%
+                                    </span>
+                                </div>
+                            </div>
+                            <span class="decision-badge" :class="activeSymbolData.recommendation" style="font-size: 1rem; padding: 8px 16px;">
+                                {{ activeSymbolData.recommendation || 'HOLD' }}
+                            </span>
+                        </div>
+
+                        <div class="canvas-wrap">
+                            <canvas id="tickChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Right: Decision Details & History -->
+                    <div class="info-sidebar">
+                        <div class="decision-box">
+                            <h4>Current Decision & Reasoning</h4>
+                            <div class="decision-main">
+                                <div class="decision-action-huge decision-badge" :class="activeDecision.action">
+                                    {{ activeDecision.action }}
+                                </div>
+                                <div class="confidence-meter">
+                                    <span class="stat-label">Confidence</span>
+                                    <span class="confidence-val">{{ Math.round((activeDecision.confidence || 0.7) * 100) }}%</span>
+                                </div>
+                            </div>
+
+                            <ul class="reasoning-list" v-if="activeDecision.reasoning && activeDecision.reasoning.length">
+                                <li v-for="(reason, idx) in activeDecision.reasoning" :key="idx">
+                                    {{ reason }}
+                                </li>
+                            </ul>
+                            <p v-else style="color: var(--text-muted); font-size: 0.85rem;">
+                                Model evaluating optimal Bellman trajectory based on real-time price state.
+                            </p>
+                        </div>
+
+                        <div class="history-box">
+                            <h4>Decision History ({{ activeSymbolData.symbol }})</h4>
+                            <div class="history-list" v-if="symbolDecisions.length > 0">
+                                <div class="history-item" v-for="(dec, idx) in symbolDecisions" :key="idx">
+                                    <span class="decision-badge" :class="dec.action" style="padding: 2px 8px; font-size: 0.75rem;">
+                                        {{ dec.action }}
+                                    </span>
+                                    <span style="font-weight: 600; font-family: monospace;">{{ Math.round(dec.confidence * 100) }}%</span>
+                                    <span class="history-time">{{ dec.time_str }}</span>
+                                </div>
+                            </div>
+                            <p v-else style="color: var(--text-muted); font-size: 0.85rem; padding: 12px 0;">
+                                Monitoring decisions live... New decisions will log here as trades execute.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                const connected = ref(false);
+                const lastTimeStr = ref('');
+                const symbolsMap = reactive({});
+                const decisionsMap = reactive({});
+                const tickHistoryMap = reactive({});
+                const selectedSymbol = ref(null);
+
+                let chartInstance = null;
+                let ws = null;
+
+                const symbols = computed(() => {
+                    return Object.values(symbolsMap).sort((a, b) => a.symbol.localeCompare(b.symbol));
+                });
+
+                const activeSymbolData = computed(() => {
+                    if (!selectedSymbol.value) return {};
+                    return symbolsMap[selectedSymbol.value] || { symbol: selectedSymbol.value };
+                });
+
+                const activeDecision = computed(() => {
+                    if (!selectedSymbol.value) return {};
+                    const list = decisionsMap[selectedSymbol.value] || [];
+                    if (list.length > 0) return list[0];
+                    return {
+                        action: activeSymbolData.value.recommendation || 'HOLD',
+                        confidence: activeSymbolData.value.confidence || 0.70,
+                        reasoning: ['Model evaluating optimal Bellman value function for current tick']
+                    };
+                });
+
+                const symbolDecisions = computed(() => {
+                    if (!selectedSymbol.value) return [];
+                    return decisionsMap[selectedSymbol.value] || [];
+                });
+
+                function formatPrice(val) {
+                    if (val === undefined || val === null || isNaN(val)) return '0.00';
+                    return Number(val).toFixed(2);
+                }
+
+                function formatChange(val) {
+                    if (val === undefined || val === null || isNaN(val)) return '0.00';
+                    const sign = val > 0 ? '+' : '';
+                    return sign + Number(val).toFixed(2);
+                }
+
+                function formatNumber(val) {
+                    if (!val) return '0';
+                    if (val >= 1e6) return (val / 1e6).toFixed(2) + 'M';
+                    if (val >= 1e3) return (val / 1e3).toFixed(1) + 'K';
+                    return Math.round(val).toString();
+                }
+
+                function getChangeClass(val) {
+                    if (val > 0) return 'positive';
+                    if (val < 0) return 'negative';
+                    return 'neutral';
+                }
+
+                function connectWebSocket() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+                    ws = new WebSocket(wsUrl);
+
+                    ws.onopen = () => {
+                        connected.value = true;
+                    };
+
+                    ws.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            handleIncomingData(data);
+                        } catch (e) {
+                            console.error('Error parsing WebSocket message:', e);
+                        }
+                    };
+
+                    ws.onclose = () => {
+                        connected.value = false;
+                        setTimeout(connectWebSocket, 2000);
+                    };
+
+                    ws.onerror = () => {
+                        connected.value = false;
+                        ws.close();
+                    };
+                }
+
+                function handleIncomingData(data) {
+                    if (data.time_str) {
+                        lastTimeStr.value = data.time_str;
+                    }
+
+                    if (data.symbols && Array.isArray(data.symbols)) {
+                        data.symbols.forEach(symObj => {
+                            symbolsMap[symObj.symbol] = {
+                                ...symbolsMap[symObj.symbol],
+                                ...symObj
+                            };
+
+                            // Update in-memory tick history for charting
+                            if (!tickHistoryMap[symObj.symbol]) {
+                                tickHistoryMap[symObj.symbol] = [];
+                            }
+                            if (symObj.currentPrice > 0) {
+                                const hist = tickHistoryMap[symObj.symbol];
+                                const lastItem = hist[hist.length - 1];
+                                if (!lastItem || lastItem.price !== symObj.currentPrice) {
+                                    hist.push({
+                                        time: data.time_str || new Date().toLocaleTimeString(),
+                                        price: symObj.currentPrice
+                                    });
+                                    if (hist.length > 50) hist.shift();
+                                }
+                            }
+                        });
+
+                        if (selectedSymbol.value && chartInstance) {
+                            updateChartData();
+                        }
+                    }
+
+                    if (data.decisions && Array.isArray(data.decisions)) {
+                        data.decisions.forEach(dec => {
+                            if (!decisionsMap[dec.symbol]) {
+                                decisionsMap[dec.symbol] = [];
+                            }
+                            const list = decisionsMap[dec.symbol];
+                            // Prepend if new
+                            if (!list.length || list[0].timestamp !== dec.timestamp) {
+                                list.unshift(dec);
+                                if (list.length > 30) list.pop();
+                            }
+                        });
+                    }
+                }
+
+                async function selectSymbol(symbol) {
+                    selectedSymbol.value = symbol;
+                    // Fetch recent history via REST to populate chart immediately
+                    try {
+                        const res = await fetch(`/api/symbols/${symbol}`);
+                        if (res.ok) {
+                            const detail = await res.json();
+                            if (detail.ticks && detail.ticks.length) {
+                                tickHistoryMap[symbol] = detail.ticks.map(t => ({
+                                    time: t.time_str,
+                                    price: t.price
+                                }));
+                            }
+                            if (detail.decisions && detail.decisions.length) {
+                                decisionsMap[symbol] = detail.decisions;
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Could not fetch detail from REST endpoint:', e);
+                    }
+
+                    await nextTick();
+                    initChart();
+                }
+
+                function clearSelection() {
+                    if (chartInstance) {
+                        chartInstance.destroy();
+                        chartInstance = null;
+                    }
+                    selectedSymbol.value = null;
+                }
+
+                function initChart() {
+                    const ctx = document.getElementById('tickChart');
+                    if (!ctx) return;
+
+                    if (chartInstance) {
+                        chartInstance.destroy();
+                    }
+
+                    const sym = selectedSymbol.value;
+                    const hist = tickHistoryMap[sym] || [];
+                    const labels = hist.map(h => h.time);
+                    const prices = hist.map(h => h.price);
+
+                    const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
+                    const strokeColor = isUp ? '#10b981' : '#ef4444';
+                    const fillColor = isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+
+                    chartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels.length ? labels : ['Starting...'],
+                            datasets: [{
+                                label: `${sym} Price`,
+                                data: prices.length ? prices : [activeSymbolData.value.currentPrice || 0],
+                                borderColor: strokeColor,
+                                backgroundColor: fillColor,
+                                fill: true,
+                                tension: 0.25,
+                                pointRadius: 3,
+                                pointHoverRadius: 6,
+                                borderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: { duration: 300 },
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    mode: 'index',
+                                    intersect: false,
+                                    callbacks: {
+                                        label: (context) => `$${Number(context.parsed.y).toFixed(2)}`
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                                    ticks: { color: '#64748b', maxRotation: 0 }
+                                },
+                                y: {
+                                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                                    ticks: {
+                                        color: '#64748b',
+                                        callback: (value) => `$${value.toFixed(2)}`
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                function updateChartData() {
+                    if (!chartInstance || !selectedSymbol.value) return;
+
+                    const sym = selectedSymbol.value;
+                    const hist = tickHistoryMap[sym] || [];
+                    if (!hist.length) return;
+
+                    chartInstance.data.labels = hist.map(h => h.time);
+                    chartInstance.data.datasets[0].data = hist.map(h => h.price);
+
+                    const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
+                    chartInstance.data.datasets[0].borderColor = isUp ? '#10b981' : '#ef4444';
+                    chartInstance.data.datasets[0].backgroundColor = isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+
+                    chartInstance.update('none');
+                }
+
+                onMounted(() => {
+                    connectWebSocket();
+                });
+
+                return {
+                    connected,
+                    lastTimeStr,
+                    symbols,
+                    selectedSymbol,
+                    activeSymbolData,
+                    activeDecision,
+                    symbolDecisions,
+                    selectSymbol,
+                    clearSelection,
+                    formatPrice,
+                    formatChange,
+                    formatNumber,
+                    getChangeClass
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
