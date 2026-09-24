@@ -70,6 +70,13 @@ The project implements a **Bellman Decision model** for equity portfolio managem
     5. **05-backtest-validation**: Backtest and validation.
 - **Infrastructure**: The environment is configured for Python 3.14, and the data pipeline (Alpaca -> Buffer -> DBWriter -> PostgreSQL) is established.
 - **Domain Model**: Implemented `src/domain.py` containing `MarketState`, `PortfolioState`, `FullState`, and `Action` schemas with Pydantic validation.
+- **Mathematical Engine**: Implemented `src/model.py` containing `BellmanEngine` for core mathematical operations.
+
+## Status
+The implementation phase is underway. Ticket `01-define-state-action-schema` and `02-implement-bellman-core` are complete. The next objective is `03-integrate-rl-training-loop`.
+
+## Suggested Skills for Next Agent
+- `implement`: To begin executing the next ticket: `03-integrate-rl-training-loop`.
 - `diagnosing-bugs`: To be used if issues arise during the integration of the Bellman math or the data pipeline.
 - `codebase-design`: For refining module interfaces during the implementation of the core logic.
 - `research`: To look up specific Alpaca/Adanos API details if necessary during data mapping.
