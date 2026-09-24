@@ -7,6 +7,7 @@ class ValueFunction(Protocol):
     def predict(self, state_vector: np.ndarray) -> float: ...
     def update(self, state_vector: np.ndarray, target: float, learning_rate: float) -> None: ...
 
+
 class BellmanEngine:
     """
     Core math engine that implements the Bellman equation logic.
@@ -73,3 +74,4 @@ class RLTrainer:
         
         # Update the value function toward the target
         self.vf.update(state_vector, target, self.learning_rate)
+
