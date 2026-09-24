@@ -8,3 +8,5 @@ outputs/
 data/
 .DS_Store
 .coverage
+wlsf/
+
