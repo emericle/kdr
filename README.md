@@ -22,15 +22,31 @@ A Python 3.14-powered trading engine that leverages a Bellman decision model to 
 
 ## Setup
 
-1. Ensure Python 3.14+ is installed on your system.
-2. Create the virtual environment: `python3.14 -m venv .venv`
-3. Activate the environment: `source .venv/bin/activate`
-4. Install dependencies: `pip install -r requirements.txt`
-5. Configure `.env` with the following variables:
-   - `ALPACA_API_KEY`
-   - `ALPACA_SECRET_KEY`
-   - `ADANOS_API_KEY`
-   - `DATABASE_URL` (or separate connection credentials)
+1. **Clone the repository** (if not already cloned)
+2. **Python 3.14+** is required (Check with `python3.14 --version`)
+3. **Quick Start:** Use the startup scripts instead of manual setup:
+   ```bash
+   # Run with normal logging
+   ./start.sh
+
+   # Run with debug mode (verbose logging)
+   ./start.sh --debug
+   ```
+
+4. **Manual Setup (if needed)**:
+   - Create the virtual environment: `python3.14 -m venv .venv`
+   - Activate the environment: `source .venv/bin/activate`
+   - Install dependencies: `pip install -r requirements.txt`
+   - Configure `.env` with the following variables:
+     - `ALPACA_API_KEY`
+     - `ALPACA_SECRET_KEY`
+     - `ADANOS_API_KEY`
+     - `DATABASE_URL` (or separate connection credentials)
+
+5. **Database Setup**:
+   - Ensure PostgreSQL is running
+   - Create a database: `createdb kdr_db` or via SQL
+   - Set the DATABASE_URL in your .env file
 
 ## Directory Structure
 
@@ -53,3 +69,25 @@ python src/scraper.py --debug
 | `--debug` | Enables verbose logging and debug output. |
 
 Note: Running `python src/scraper.py --help` will display all available command-line options.
+
+## Startup Utilities
+
+The project includes several utility scripts to help with setup and validation:
+
+| Script | Description |
+| :--- | :--- |
+| `start.sh` / `start.bat` | Main startup script (checks env vars, sets up venv, runs process) |
+| `check_env.py` | Displays status of all environment variables |
+| `test_startup.py` | Validates system setup before starting the process |
+
+### Using the Utilities
+
+**Quick Environment Check:**
+```bash
+python check_env.py
+```
+
+**Validation Tests:**
+```bash
+python test_startup.py
+```

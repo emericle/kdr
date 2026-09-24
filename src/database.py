@@ -3,9 +3,10 @@ import os
 import json
 import logging
 from typing import List, Optional
+from datetime import datetime
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.pool import QueuePool
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
@@ -38,7 +39,13 @@ class DatabaseConnection:
         if "sqlite" in self.db_url:
             self.engine = create_engine(self.db_url)
         else:
-            self.engine = create_engine(self.db_url, poolclass=QueuePool)
+            self.engine = create_engine(
+                self.db_url,
+                poolclass=QueuePool,
+                pool_pre_ping=True,
+                pool_recycle=300,
+                connect_args={"connect_timeout": 1}
+            )
         
         self.session_factory = sessionmaker(bind=self.engine)
 
@@ -65,8 +72,9 @@ class DatabaseConnection:
         if session:
             session.close()
 
-# Base Model for SQLAlchemy 2.0+ style or standard declaration
-Base = declarative_base()
+# Base Model for SQLAlchemy 2.0+
+class Base(DeclarativeBase):
+    pass
 
 class MarketDataModel(Base):
     """Schema for market data records."""
@@ -97,33 +105,86 @@ class ModelWeightsModel(Base):
     last_trained = Column(DateTime)
     weights_json = Column(Text)
 
+MARKET_DATA_COLUMNS = {"symbol", "timestamp", "open", "high", "low", "close", "volume"}
+
 class DatabaseManager:
     """High-level manager for database operations."""
     def __init__(self, db_url: Optional[str] = None):
         self.connection = DatabaseConnection(db_url)
 
-    def add_market_data(self, data: List[dict]):
-        """Adds new market data records to the database."""
+    def add_market_data(self, data: List[dict]) -> None:
+        """Adds new market data records to the database in a single batched transaction."""
+        if not data:
+            return
+
         session = self.connection.get_session()
         if not session:
             logger.warning("No session available")
             return
 
         try:
+            records = []
             for item in data:
-                # Ensure only keys that belong to the model are included
-                cols = MarketDataModel.__table__.columns.keys()
-                filtered_item = {k: v for k, v in item.items() if k in cols}
+                filtered_item = {k: v for k, v in item.items() if k in MARKET_DATA_COLUMNS}
                 logger.debug("Ready to insert record: %s", filtered_item)
-                new_record = MarketDataModel(**filtered_item)
-                session.add(new_record)
+                records.append(MarketDataModel(**filtered_item))
+
+            session.add_all(records)
             session.commit()
             logger.info("Database commit successful.")
         except Exception as e:
-            logger.error("CRITICAL ERROR in DB write: %s", e)
-            import traceback
-            logger.debug(traceback.format_exc())
-            session.rollback()
+            logger.error("Error writing market data to database: %s", e)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        finally:
+            self.connection.close(session)
+
+    def get_historical_market_data(
+        self,
+        symbol: str,
+        start_time: Optional[datetime] = None,
+        limit: int = 2000
+    ) -> List[dict]:
+        """Retrieves historical market data / bars for a symbol since start_time."""
+        session = self.connection.get_session()
+        if not session:
+            return []
+        try:
+            query = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper()
+            )
+            if start_time is not None:
+                query = query.filter(MarketDataModel.timestamp >= start_time)
+            if limit:
+                # Retrieve the latest matching records ordered ascending efficiently
+                records = (
+                    query.order_by(MarketDataModel.timestamp.desc())
+                    .limit(limit)
+                    .all()
+                )
+                records.reverse()
+            else:
+                records = query.order_by(MarketDataModel.timestamp.asc()).all()
+
+            return [
+                {
+                    "symbol": r.symbol,
+                    "timestamp": r.timestamp.timestamp() if isinstance(r.timestamp, datetime) else r.timestamp,
+                    "price": float(r.close if r.close is not None else r.open or 0.0),
+                    "open": float(r.open or 0.0),
+                    "high": float(r.high or 0.0),
+                    "low": float(r.low or 0.0),
+                    "close": float(r.close or 0.0),
+                    "volume": float(r.volume or 0.0),
+                    "time_str": r.timestamp.strftime("%H:%M:%S") if isinstance(r.timestamp, datetime) else str(r.timestamp)
+                }
+                for r in records
+            ]
+        except Exception as e:
+            logger.error("Error retrieving historical market data for %s: %s", symbol, e)
+            return []
         finally:
             self.connection.close(session)
 
@@ -135,7 +196,10 @@ class DatabaseManager:
         try:
             query = session.query(ModelWeightsModel).filter_by(symbol=symbol).first()
             if query:
-                return json.loads(query.weights_json)
+                try:
+                    return json.loads(query.weights_json)
+                except (json.JSONDecodeError, TypeError):
+                    return None
             return None
         finally:
             self.connection.close(session)
