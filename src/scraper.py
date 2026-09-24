@@ -5,7 +5,6 @@ import time
 import logging
 import datetime
 import sys
-import asyncio
 import signal
 import argparse
 

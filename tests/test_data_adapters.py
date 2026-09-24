@@ -10,6 +10,58 @@ from src.domain import MarketState, PortfolioState, FullState
 class TestAlpacaDataAdapter:
     """Test AlpacaDataAdapter functionality."""
 
+    def test_normalize_timestamp_datetime(self):
+        """Should return datetime object unchanged."""
+        dt = datetime.datetime.now()
+        result = AlpacaDataAdapter._normalize_timestamp(dt)
+        assert result == dt
+
+    def test_normalize_timestamp_iso_string(self):
+        """Should parse ISO formatted datetime string."""
+        dt_str = '2023-01-01T12:00:00Z'
+        result = AlpacaDataAdapter._normalize_timestamp(dt_str)
+        assert result is not None
+        assert result.year == 2023
+        assert result.month == 1
+        assert result.day == 1
+        assert result.hour == 12
+        assert result.minute == 0
+        assert result.second == 0
+
+    def test_normalize_timestamp_iso_string_with_timezone(self):
+        """Should parse ISO string with timezone offset."""
+        dt_str = '2023-01-01T12:00:00+05:30'
+        result = AlpacaDataAdapter._normalize_timestamp(dt_str)
+        assert result is not None
+
+    def test_normalize_timestamp_integer_seconds(self):
+        """Should parse Unix timestamp in seconds."""
+        ts = int(datetime.datetime(2023, 1, 1, 12, 0, 0).timestamp())
+        result = AlpacaDataAdapter._normalize_timestamp(ts)
+        assert result is not None
+        assert result.year == 2023
+        assert result.month == 1
+        assert result.day == 1
+
+    def test_normalize_timestamp_integer_milliseconds(self):
+        """Should parse Unix timestamp in milliseconds."""
+        ts = int(datetime.datetime(2023, 1, 1, 12, 0, 0).timestamp() * 1000)
+        result = AlpacaDataAdapter._normalize_timestamp(ts)
+        assert result is not None
+
+    def test_normalize_timestamp_integer_nanoseconds(self):
+        """Should parse Unix timestamp in nanoseconds."""
+        dt = datetime.datetime(2023, 1, 1, 12, 0, 0)
+        ts = int(dt.timestamp() * 1e9)
+        result = AlpacaDataAdapter._normalize_timestamp(ts)
+        assert result is not None
+
+    def test_normalize_timestamp_invalid(self):
+        """Should raise ValueError for unsupported timestamp."""
+        ts = 'not-a-timestamp'
+        with pytest.raises(ValueError):
+            AlpacaDataAdapter._normalize_timestamp(ts)
+
     def test_parse_tick_data_success(self):
         """Should successfully parse valid tick data."""
         raw_tick = {
@@ -144,6 +196,51 @@ class TestAlpacaDataAdapter:
         assert isinstance(state, FullState)
         assert 'AAPL' in state.market.prices
         assert len(state.portfolio.holdings) == 0
+
+    def test_parse_bar_data_missing_fields(self):
+        """Should return None when required bar fields are missing."""
+        raw_bar = {'symbol': 'AAPL'}  # Missing timestamp, OHLC, volume
+
+        result = AlpacaDataAdapter.parse_bar_data(raw_bar)
+
+        assert result is None
+
+    def test_create_portfolio_state_empty_positions(self):
+        """Should create empty portfolio state when no positions provided."""
+        state = AlpacaDataAdapter.create_portfolio_state()
+
+        assert isinstance(state, PortfolioState)
+        assert len(state.holdings) == 0
+        assert state.cash == 0.0
+
+    def test_create_portfolio_state_with_invalid_positions(self):
+        """Should skip invalid position entries gracefully."""
+        positions = [
+            {'symbol': 'AAPL', 'qty': 100, 'avg_entry_price': 150.0},  # Valid
+            {'qty': 50},  # Missing symbol
+            {},  # Empty dict
+            {'symbol': 'TSLA'},  # Missing price
+            {'symbol': 'MSFT', 'avg_entry_price': 300.0},  # Missing qty
+        ]
+
+        state = AlpacaDataAdapter.create_portfolio_state(positions)
+
+        assert isinstance(state, PortfolioState)
+        assert getattr(state, 'holdings', {}).get('AAPL') == 100.0
+        assert state.cash == 0.0  # No cash data in positions
+
+    def test_create_full_state_with_none_args(self):
+        """Should raise ValueError when empty/None ticks provided."""
+        with pytest.raises(ValueError):
+            AlpacaDataAdapter.create_full_state(None, None)
+
+    def test_create_full_state_with_empty_ticks_and_positions(self):
+        """Should raise ValueError when empty tick list provided."""
+        ticks = []
+        positions = []
+
+        with pytest.raises(ValueError):
+            AlpacaDataAdapter.create_full_state(ticks, positions)
 
 
 # --- Test AdanosDataAdapter ---

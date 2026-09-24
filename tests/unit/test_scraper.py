@@ -657,9 +657,8 @@ class TestDBWriterWorker:
         }
         
         # Just ensure the method exists and can be called
-        result = worker.save_to_db("AAPL", bar_data)
-        
-        assert result is None or result is not None
+        worker.save_to_db("AAPL", bar_data)
+        assert True
     
     def test_save_to_db_normal_mode(self):
         """Test save_to_db in normal mode."""

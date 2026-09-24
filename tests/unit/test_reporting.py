@@ -121,3 +121,65 @@ class TestMultiSymbolReporter:
             out_file = os.path.join(tmpdir, "multi_report.html")
             path = reporter.generate_report(data, out_file)
             assert os.path.exists(path)
+
+
+class TestReportingCoverageAdditions:
+    def test_get_dated_output_path(self):
+        from src.reporting import get_dated_output_path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = get_dated_output_path("test.csv", base_dir=tmpdir)
+            assert os.path.basename(p) == "test.csv"
+            assert tmpdir in p
+
+    def test_csv_reporter_empty_data(self):
+        from src.reporting import CSVReporter
+        reporter = CSVReporter()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = os.path.join(tmpdir, "empty.csv")
+            res = reporter.generate_report([], out)
+            assert os.path.exists(res)
+
+    def test_performance_analyzer_empty_and_edge_cases(self):
+        from src.reporting import PerformanceAnalyzer
+        pa = PerformanceAnalyzer()
+        assert pa.calculate_metrics([])["total_trades"] == 0
+
+        # All wins (losing trades == 0, profit_factor == inf)
+        wins = [{"entry_price": 100.0, "exit_price": 110.0, "quantity": 10}]
+        res_wins = pa.calculate_metrics(wins)
+        assert res_wins["profit_factor"] == float("inf")
+
+        # All losses (gross_profits == 0)
+        losses = [{"entry_price": 100.0, "exit_price": 90.0, "quantity": 10}]
+        res_losses = pa.calculate_metrics(losses)
+        assert res_losses["profit_factor"] == 0.0
+
+        # Alternate trade formats
+        alt_trades = [
+            {"pnl": 50.0},
+            {"entry": 100.0, "exit": 120.0, "qty": 2},
+            {"other": 123}
+        ]
+        res_alt = pa.calculate_metrics(alt_trades)
+        assert res_alt["total_trades"] == 3
+        assert res_alt["total_return"] == 90.0
+
+    def test_report_scheduler_cancel_missing(self):
+        from src.reporting import ReportScheduler
+        rs = ReportScheduler()
+        assert not rs.cancel_job("nonexistent-job-id")
+
+    def test_chart_generator_plotly_importerror_fallback(self):
+        import sys
+        from unittest.mock import patch
+        from src.reporting import ChartGenerator
+
+        cg = ChartGenerator()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = os.path.join(tmpdir, "fallback.html")
+            # Patch plotly.graph_objects in sys.modules to simulate missing plotly
+            with patch.dict(sys.modules, {"plotly.graph_objects": None}):
+                path = cg.create_portfolio_chart([{"timestamp": "2023-01-01", "value": 100}], out)
+                assert os.path.exists(path)
+                with open(path) as f:
+                    assert "cdn.plot.ly" in f.read()

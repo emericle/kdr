@@ -452,4 +452,130 @@ class TestTradingExecutor:
         assert acc["id"] == "acc-pool"
         mock_session.get.assert_called_once()
 
+    def test_kelly_zero_account_or_ratio(self):
+        from src.trading_execution import PositionSizing
+        assert PositionSizing.calculate_kelly(0.6, -1.0, 1000.0) == 0.0
+        assert PositionSizing.calculate_kelly(0.6, 2.0, 0.0) == 0.0
+
+    def test_risk_manager_edge_cases(self):
+        from src.trading_execution import RiskManager
+        rm = RiskManager()
+        # Shares <= 0
+        res = rm.evaluate_order("AAPL", "buy", 0, 150.0, 1000.0, 10000.0)
+        assert not res["approved"]
+        # Buy with 0 cash available
+        res_cash = rm.evaluate_order("AAPL", "buy", 10, 150.0, 0.0, 10000.0)
+        assert not res_cash["approved"]
+        # Sell with 0 current shares
+        res_sell = rm.evaluate_order("AAPL", "sell", 10, 150.0, 1000.0, 10000.0, current_shares=0)
+        assert not res_sell["approved"]
+        # Unsupported side
+        res_other = rm.evaluate_order("AAPL", "unknown", 10, 150.0, 1000.0, 10000.0)
+        assert not res_other["approved"]
+
+    def test_order_validator_edge_cases(self):
+        from src.trading_execution import OrderValidator
+        assert not OrderValidator.validate_order("not-a-dict")
+        assert not OrderValidator.validate_order({"symbol": "", "quantity": 10, "side": "buy"})
+        assert not OrderValidator.validate_order({"symbol": "AAPL", "quantity": -5, "side": "buy"})
+        assert not OrderValidator.validate_order({"symbol": "AAPL", "quantity": 10, "side": "invalid_side"})
+        assert OrderValidator.validate_order({"symbol": "AAPL", "quantity": 10, "side": "buy"})
+
+    def test_order_tracker_invalid(self):
+        from src.trading_execution import OrderTracker
+        tracker = OrderTracker(max_history=1)
+        tracker.record_order({})
+        tracker.record_order({})
+        assert len(tracker.get_order_history()) == 1
+
+    def test_alpaca_client_errors_and_limit_price(self):
+        from src.trading_execution import AlpacaClient
+        mock_session = MagicMock()
+        client = AlpacaClient(api_key="k", api_secret="s", session=mock_session)
+
+        # submit_order with limit_price
+        mock_resp_limit = MagicMock()
+        mock_resp_limit.status_code = 200
+        mock_resp_limit.json.return_value = {
+            "id": "ord-1", "symbol": "AAPL", "qty": "10", "filled_qty": "10",
+            "side": "buy", "type": "limit", "status": "filled", "filled_avg_price": "150.5"
+        }
+        mock_session.post.return_value = mock_resp_limit
+        order = client.submit_order("AAPL", 10, "buy", "limit", limit_price=150.0)
+        assert order.price == 150.5
+
+        # submit_order error status
+        mock_resp_err = MagicMock()
+        mock_resp_err.status_code = 400
+        mock_resp_err.text = "Insufficient funds"
+        mock_session.post.return_value = mock_resp_err
+        err_order = client.submit_order("AAPL", 10, "buy")
+        assert "rejected" in err_order.status
+
+        # submit_order exception
+        mock_session.post.side_effect = Exception("Network timeout")
+        except_order = client.submit_order("AAPL", 10, "buy")
+        assert "error" in except_order.status
+        mock_session.post.side_effect = None
+
+        # get_account error and exception
+        mock_resp_acc_err = MagicMock()
+        mock_resp_acc_err.status_code = 500
+        mock_session.get.return_value = mock_resp_acc_err
+        assert client.get_account() == {}
+        mock_session.get.side_effect = Exception("Acc error")
+        assert client.get_account() == {}
+        mock_session.get.side_effect = None
+
+        # get_positions success, error and exception
+        mock_resp_pos = MagicMock()
+        mock_resp_pos.status_code = 200
+        mock_resp_pos.json.return_value = [{"symbol": "AAPL", "qty": "10"}]
+        mock_session.get.return_value = mock_resp_pos
+        assert len(client.get_positions()) == 1
+
+        mock_resp_pos_err = MagicMock()
+        mock_resp_pos_err.status_code = 500
+        mock_session.get.return_value = mock_resp_pos_err
+        assert client.get_positions() == []
+
+        mock_session.get.side_effect = Exception("Pos error")
+        assert client.get_positions() == []
+
+    def test_executor_decision_hold_and_unsupported(self):
+        from src.trading_execution import TradingExecutor
+        from src.domain import TradeMovement
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        assert executor.translate_decision(TradeMovement.HOLD, "AAPL", 150.0, 1000.0) is None
+        assert executor.translate_decision("UNKNOWN_ACTION", "AAPL", 150.0, 1000.0) is None
+
+    def test_executor_buy_sell_rejected_by_risk(self):
+        from src.trading_execution import TradingExecutor, RiskManager
+        from src.domain import TradeMovement
+        mock_rm = MagicMock(spec=RiskManager)
+        mock_rm.evaluate_order.return_value = {"approved": False, "adjusted_shares": 0, "reason": "Denied"}
+        executor = TradingExecutor(alpaca_client=MagicMock(), risk_manager=mock_rm)
+
+        buy_res = executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 1000.0)
+        assert buy_res is None
+
+        sell_res = executor.translate_decision(TradeMovement.SELL, "AAPL", 150.0, 1000.0, current_shares=10)
+        assert sell_res is None
+
+    def test_executor_execute_decision_validation_failure(self):
+        from src.trading_execution import TradingExecutor, OrderValidator
+        from src.domain import TradeMovement
+        mock_val = MagicMock(spec=OrderValidator)
+        mock_val.validate_order.return_value = False
+        executor = TradingExecutor(alpaca_client=MagicMock(), order_validator=mock_val)
+
+        res = executor.execute_decision(
+            action=TradeMovement.BUY,
+            symbol="AAPL",
+            current_price=150.0,
+            portfolio_cash=5000.0,
+            portfolio_value=10000.0
+        )
+        assert res is None
+
 

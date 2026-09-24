@@ -16,7 +16,7 @@ class MarketState(BaseModel):
     sentiment_scores: Dict[str, float] = Field(default_factory=dict)
 
     @field_validator("prices")
-
+    @classmethod
     def prices_not_empty(cls, v):
         if not v:
             raise ValueError("Prices cannot be empty")
@@ -28,7 +28,7 @@ class PortfolioState(BaseModel):
     cash: float = Field(..., ge=0.0)
 
     @field_validator("holdings")
-
+    @classmethod
     def holdings_not_negative(cls, v):
         for symbol, qty in v.items():
             if qty < 0:

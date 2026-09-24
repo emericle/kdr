@@ -1,10 +1,10 @@
 """Adapters for external data sources like Adanos sentiment analysis."""
 import logging
-from typing import Dict, List, Optional, Union
+from typing import List, Optional, Union
 import datetime
 import os
 
-from src.domain import MarketState, PortfolioState, FullState
+from src.domain import MarketState, FullState
 
 logger = logging.getLogger(__name__)
 

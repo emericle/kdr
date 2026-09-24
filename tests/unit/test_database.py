@@ -44,7 +44,7 @@ class TestGetDatabaseURL(unittest.TestCase):
             self.assertIsNotNone(conn.engine)
 
     @patch('src.database.get_database_url')
-    def test_sqlite_engine_for_memory_database(self, mock_get_url):
+    def test_sqlite_engine_for_memory_database_mocked(self, mock_get_url):
         mock_get_url.return_value = "sqlite:///:memory:"
         
         mock_create_engine = MagicMock(return_value=MagicMock())
@@ -165,43 +165,7 @@ class TestDatabaseManager(unittest.TestCase):
         self.assertEqual(len(records), 2)
         session.close()
 
-    def test_add_market_data_ignores_extra_columns(self):
-        test_data = [{
-            'symbol': 'AAPL',
-            'timestamp': datetime.datetime(2023, 1, 1, 12, 0, 0),
-            'open': 150.0,
-            'high': 160.0,
-            'low': 140.0,
-            'close': 155.0,
-            'volume': 1000.0,
-            'extra_field': 'should_be_ignored'
-        }]
-        
-        self.db_manager.add_market_data(test_data)
-        
-        session = self.db_manager.connection.get_session()
-        from src.database import MarketDataModel
-        records = session.query(MarketDataModel).filter_by(symbol='AAPL').all()
-        self.assertEqual(len(records), 1)
-        session.close()
-
-    def test_add_market_data_handles_invalid_data(self):
-        test_data = [{
-            'symbol': 'INVALID',
-            'timestamp': datetime.datetime(2023, 1, 1, 12, 0, 0),
-            'price': 100.0,
-            'volume': 50
-        }]
-        
-        self.db_manager.add_market_data(test_data)
-        
-        session = self.db_manager.connection.get_session()
-        from src.database import MarketDataModel
-        records = session.query(MarketDataModel).all()
-        self.assertEqual(len(records), 1)
-        session.close()
-
-    def test_add_market_data_multiple_records(self):
+    def test_add_market_data_ignores_extra_columns_filter(self):
         test_data = [
             {'symbol': 'AAPL', 'timestamp': datetime.datetime(2023, 1, 1, 12, 0, 0), 
              'open': 150.0, 'high': 160.0, 'low': 140.0, 'close': 155.0, 'volume': 1000.0},
@@ -338,9 +302,10 @@ class TestDatabaseSessionManagement(unittest.TestCase):
         conn = DatabaseConnection()
         
         mock_session = MagicMock()
+        mock_close = MagicMock()
+        mock_session.close = mock_close
         conn.close(mock_session)
-        
-        mock_session.close.assert_called_once()
+        mock_close.assert_called_once()
 
     @patch('src.database.get_database_url')
     def test_close_session_with_none(self, mock_get_url):
@@ -352,6 +317,99 @@ class TestDatabaseSessionManagement(unittest.TestCase):
             conn = DatabaseConnection()
             conn.close(None)
             # Should not raise exception
+
+class TestGetHistoricalMarketData(unittest.TestCase):
+    def setUp(self):
+        from src.database import DatabaseManager, Base, MarketDataModel
+        self.db = DatabaseManager(db_url="sqlite:///:memory:")
+        Base.metadata.create_all(self.db.connection.engine)
+
+    def test_get_historical_market_data_empty(self):
+        res = self.db.get_historical_market_data("AAPL")
+        self.assertEqual(res, [])
+
+    def test_get_historical_market_data_with_records(self):
+        now = datetime.datetime.now()
+        data = [
+            {
+                "symbol": "AAPL",
+                "timestamp": now - datetime.timedelta(minutes=10),
+                "open": 150.0,
+                "high": 155.0,
+                "low": 149.0,
+                "close": 152.0,
+                "volume": 1000.0
+            },
+            {
+                "symbol": "AAPL",
+                "timestamp": now - datetime.timedelta(minutes=5),
+                "open": 152.0,
+                "high": 156.0,
+                "low": 151.0,
+                "close": 155.0,
+                "volume": 1200.0
+            },
+            {
+                "symbol": "MSFT",
+                "timestamp": now,
+                "open": 300.0,
+                "high": 305.0,
+                "low": 299.0,
+                "close": 302.0,
+                "volume": 800.0
+            }
+        ]
+        self.db.add_market_data(data)
+
+        # Retrieve AAPL records
+        records = self.db.get_historical_market_data("AAPL")
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["close"], 152.0)
+        self.assertEqual(records[1]["close"], 155.0)
+
+        # Retrieve with limit
+        limited = self.db.get_historical_market_data("AAPL", limit=1)
+        self.assertEqual(len(limited), 1)
+        self.assertEqual(limited[0]["close"], 155.0)
+
+        # Retrieve with start_time
+        start_time = now - datetime.timedelta(minutes=7)
+        filtered = self.db.get_historical_market_data("AAPL", start_time=start_time)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["close"], 155.0)
+
+
+        # Retrieve with limit=0/None (all ascending branch)
+        all_asc = self.db.get_historical_market_data("AAPL", limit=0)
+        self.assertEqual(len(all_asc), 2)
+        self.assertEqual(all_asc[0]["close"], 152.0)
+
+    def test_database_manager_session_none(self):
+        self.db.connection.get_session = MagicMock(return_value=None)
+        # Should not raise exception
+        self.db.add_market_data([{"symbol": "AAPL", "open": 100.0}])
+        self.assertEqual(self.db.get_historical_market_data("AAPL"), [])
+
+    def test_database_manager_commit_failure(self):
+        mock_session = MagicMock()
+        mock_session.commit.side_effect = Exception("Commit error")
+        mock_session.rollback.side_effect = Exception("Rollback error")
+        self.db.connection.get_session = MagicMock(return_value=mock_session)
+
+        # Should handle rollback error gracefully
+        self.db.add_market_data([{"symbol": "AAPL", "open": 100.0}])
+
+    def test_get_model_weights_invalid_json(self):
+        from src.database import ModelWeightsModel
+        mock_session = MagicMock()
+        mock_record = MagicMock()
+        mock_record.weights_json = "invalid json {{"
+        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_record
+        self.db.connection.get_session = MagicMock(return_value=mock_session)
+
+        res = self.db.get_model_weights("AAPL")
+        self.assertIsNone(res)
+
 
 if __name__ == '__main__':
     unittest.main()

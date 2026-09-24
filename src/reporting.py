@@ -3,7 +3,7 @@ import csv
 import json
 import uuid
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from datetime import datetime
 
 logger = logging.getLogger("Reporting")

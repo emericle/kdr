@@ -13,7 +13,7 @@ import logging
 import threading
 from collections import deque
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Any
 
@@ -231,6 +231,9 @@ class DecisionBuffer:
 market_buffer = MarketDataBuffer()
 decision_buffer = DecisionBuffer()
 _db_manager_instance: Optional[Any] = None
+_db_is_available: bool = True
+_db_last_attempt_time: float = 0.0
+_DB_RETRY_INTERVAL: float = 15.0  # seconds before attempting reconnect if DB failed
 
 
 def get_db_manager():
@@ -243,6 +246,40 @@ def get_db_manager():
         except Exception as e:
             logger.debug("DatabaseManager not initialized in web_server: %s", e)
     return _db_manager_instance
+
+
+async def _query_historical_ticks_safe(
+    db: Any,
+    symbol: str,
+    start_time: Optional[datetime],
+    limit: int
+) -> List[Dict[str, Any]]:
+    """
+    Safely queries historical market data in a background thread with a fast timeout
+    and circuit-breaker behavior so slow/unreachable databases never block the web server.
+    """
+    global _db_is_available, _db_last_attempt_time
+    now_ts = time.time()
+    if not _db_is_available and (now_ts - _db_last_attempt_time < _DB_RETRY_INTERVAL):
+        return []
+
+    _db_last_attempt_time = now_ts
+    try:
+        ticks = await asyncio.wait_for(
+            asyncio.to_thread(
+                db.get_historical_market_data,
+                symbol=symbol,
+                start_time=start_time,
+                limit=limit
+            ),
+            timeout=1.0
+        )
+        _db_is_available = True
+        return ticks or []
+    except Exception as db_err:
+        _db_is_available = False
+        logger.debug("Database query for historical market data skipped or failed: %s", db_err)
+        return []
 
 
 def compute_recommendation(symbol: str) -> Dict[str, Any]:
@@ -460,14 +497,12 @@ async def get_symbol_detail(
     historical_ticks = []
     db = get_db_manager()
     if db and hasattr(db, "get_historical_market_data"):
-        try:
-            historical_ticks = db.get_historical_market_data(
-                symbol,
-                start_time=start_time,
-                limit=limit or 1000
-            )
-        except Exception as db_err:
-            logger.debug("Could not query historical market data from db: %s", db_err)
+        historical_ticks = await _query_historical_ticks_safe(
+            db=db,
+            symbol=symbol,
+            start_time=start_time,
+            limit=limit or 1000
+        )
 
     # In-memory buffer ticks
     buffer_ticks = market_buffer.get_ticks(symbol, limit=limit or 500)
@@ -475,25 +510,32 @@ async def get_symbol_detail(
         start_ts = start_time.timestamp()
         buffer_ticks = [t for t in buffer_ticks if t.get("timestamp", 0) >= start_ts]
 
-    # Combine historical db data and in-memory buffer ticks without duplicates
-    # Use symbol + timestamp or unique ID as key
-    combined_dict = {}
-    for idx, t in enumerate(historical_ticks):
-        ts = t.get("timestamp", 0)
-        combined_dict[f"hist_{idx}_{ts}"] = t
-    for idx, t in enumerate(buffer_ticks):
-        ts = t.get("timestamp", 0)
-        # Avoid duplicate if same symbol and approximately same timestamp and price
-        duplicate = any(
-            abs(h.get("timestamp", 0) - ts) < 0.5 and h.get("price") == t.get("price")
-            for h in historical_ticks
-        )
-        if not duplicate:
-            combined_dict[f"buf_{idx}_{ts}"] = t
+    # Combine historical db data and in-memory buffer ticks without duplicates (O(N+M))
+    seen_db_keys = set()
+    all_ticks = []
+    for t in historical_ticks:
+        ts = float(t.get("timestamp", 0))
+        seen_db_keys.add((round(ts, 2), t.get("price")))
+        all_ticks.append(t)
 
-    all_ticks = sorted(combined_dict.values(), key=lambda x: x.get("timestamp", 0))
+    for t in buffer_ticks:
+        ts = float(t.get("timestamp", 0))
+        if (round(ts, 2), t.get("price")) not in seen_db_keys:
+            all_ticks.append(t)
+
+    all_ticks.sort(key=lambda x: x.get("timestamp", 0))
     if limit and len(all_ticks) > limit:
         all_ticks = all_ticks[-limit:]
+
+    # Fallback seed tick if no ticks are available yet but summary has a live price
+    if not all_ticks and summary.get("currentPrice", 0.0) > 0:
+        all_ticks.append({
+            "symbol": symbol,
+            "price": summary["currentPrice"],
+            "size": summary.get("volume", 0.0),
+            "timestamp": time.time(),
+            "time_str": datetime.now().strftime("%H:%M:%S")
+        })
 
     decision = compute_recommendation(symbol)
     decisions_history = decision_buffer.get_history(symbol, limit=20)

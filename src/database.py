@@ -3,6 +3,7 @@ import os
 import json
 import logging
 from typing import List, Optional
+from datetime import datetime
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -43,7 +44,7 @@ class DatabaseConnection:
                 poolclass=QueuePool,
                 pool_pre_ping=True,
                 pool_recycle=300,
-                connect_args={"connect_timeout": 3}
+                connect_args={"connect_timeout": 1}
             )
         
         self.session_factory = sessionmaker(bind=self.engine)
@@ -156,14 +157,16 @@ class DatabaseManager:
             )
             if start_time is not None:
                 query = query.filter(MarketDataModel.timestamp >= start_time)
-            query = query.order_by(MarketDataModel.timestamp.asc())
             if limit:
-                # If limited, take latest matching records ordered ascending
-                records = query.all()
-                if len(records) > limit:
-                    records = records[-limit:]
+                # Retrieve the latest matching records ordered ascending efficiently
+                records = (
+                    query.order_by(MarketDataModel.timestamp.desc())
+                    .limit(limit)
+                    .all()
+                )
+                records.reverse()
             else:
-                records = query.all()
+                records = query.order_by(MarketDataModel.timestamp.asc()).all()
 
             return [
                 {

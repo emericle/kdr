@@ -6,7 +6,6 @@ from src.domain import MarketState, PortfolioState, FullState
 from src.data_adapters import AlpacaDataAdapter
 from src.sentiment_adapter import AdanosDataAdapter
 from src.config_gatekeeper import validate_configs
-import src.sentiment_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +214,7 @@ class StateMapper:
 
         raw_item = market_data[symbol]
         parsed_tick = self.alpaca_adapter.parse_tick_data(raw_item)
-        if not parsed_tick or 'price' not in parsed_tick:
+        if not parsed_tick or parsed_tick.get('price', 0.0) <= 0:
             parsed_bar = self.alpaca_adapter.parse_bar_data(raw_item)
             if parsed_bar and 'close' in parsed_bar:
                 parsed_tick = {'price': parsed_bar['close']}

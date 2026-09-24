@@ -1,6 +1,7 @@
 """Unit tests for the real-time web server module."""
 
 import time
+from unittest.mock import MagicMock
 import pytest
 import requests
 
@@ -132,3 +133,119 @@ def test_compute_recommendation_momentum():
     market_buffer.add_tick("FLAT_STOCK", 100.02, 20)
     rec_flat = compute_recommendation("FLAT_STOCK")
     assert rec_flat["action"] == "HOLD"
+
+
+def test_symbol_detail_with_db_data(live_server):
+    """Verify that historical ticks from db are correctly merged with buffer ticks."""
+    from unittest.mock import MagicMock
+    import src.web_server as ws_module
+
+    mock_db = MagicMock()
+    now_ts = time.time()
+    mock_db.get_historical_market_data.return_value = [
+        {"symbol": "TESTSYM", "price": 50.0, "size": 100.0, "timestamp": now_ts - 3600, "time_str": "10:00:00"},
+        {"symbol": "TESTSYM", "price": 51.0, "size": 150.0, "timestamp": now_ts - 1800, "time_str": "10:30:00"}
+    ]
+
+    original_db = ws_module._db_manager_instance
+    original_avail = ws_module._db_is_available
+    try:
+        ws_module._db_manager_instance = mock_db
+        ws_module._db_is_available = True
+
+        market_buffer.add_tick("TESTSYM", 52.0, 200.0, timestamp=now_ts - 60)
+
+        resp = requests.get(f"{BASE_URL}/api/symbols/TESTSYM?duration=24h")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["ticks"]) == 3
+        assert [t["price"] for t in data["ticks"]] == [50.0, 51.0, 52.0]
+    finally:
+        ws_module._db_manager_instance = original_db
+        ws_module._db_is_available = original_avail
+
+
+def test_symbol_detail_fallback_seed_tick(live_server):
+    """Verify fallback seed tick is provided if buffer has summary price but no ticks in time range."""
+    import src.web_server as ws_module
+
+    # Mock DB returning empty
+    mock_db = MagicMock()
+    mock_db.get_historical_market_data.return_value = []
+
+    original_db = ws_module._db_manager_instance
+    original_avail = ws_module._db_is_available
+    try:
+        ws_module._db_manager_instance = mock_db
+        ws_module._db_is_available = True
+
+        # Add tick with timestamp in past (older than 1h)
+        market_buffer.add_tick("SEEDED", 99.5, 10.0, timestamp=time.time() - 7200)
+
+        # Query with 1h duration (buffer tick is filtered out by start_time, but summary has currentPrice 99.5)
+        resp = requests.get(f"{BASE_URL}/api/symbols/SEEDED?duration=1h")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["ticks"]) >= 1
+        assert data["ticks"][0]["price"] == 99.5
+    finally:
+        ws_module._db_manager_instance = original_db
+        ws_module._db_is_available = original_avail
+
+
+def test_db_circuit_breaker_behavior(live_server):
+    """Verify circuit breaker trips on exception and skips subsequent calls during cooldown."""
+    import src.web_server as ws_module
+
+    mock_db = MagicMock()
+    mock_db.get_historical_market_data.side_effect = Exception("DB Connection refused")
+
+    original_db = ws_module._db_manager_instance
+    original_avail = ws_module._db_is_available
+    original_time = ws_module._db_last_attempt_time
+    try:
+        ws_module._db_manager_instance = mock_db
+        ws_module._db_is_available = True
+        ws_module._db_last_attempt_time = 0.0
+
+        market_buffer.add_tick("FAILSYM", 123.0, 10.0)
+
+        resp1 = requests.get(f"{BASE_URL}/api/symbols/FAILSYM")
+        assert resp1.status_code == 200
+        assert not ws_module._db_is_available
+        assert mock_db.get_historical_market_data.call_count == 1
+
+        # Second call immediately should trip circuit breaker and not call mock_db again
+        resp2 = requests.get(f"{BASE_URL}/api/symbols/FAILSYM")
+        assert resp2.status_code == 200
+        assert mock_db.get_historical_market_data.call_count == 1
+    finally:
+        ws_module._db_manager_instance = original_db
+        ws_module._db_is_available = original_avail
+        ws_module._db_last_attempt_time = original_time
+
+
+def test_buffer_edge_cases():
+    from datetime import datetime
+    now_dt = datetime.now()
+
+    # datetime timestamp
+    t = market_buffer.add_tick("DTTICK", 100.0, 10.0, timestamp=now_dt)
+    assert t.price == 100.0
+
+    # Non-existent symbol
+    assert market_buffer.get_latest_tick("NONEXISTENT") is None
+    summary_empty = market_buffer.get_summary("NONEXISTENT")
+    assert summary_empty["currentPrice"] == 0.0
+
+    # DecisionBuffer with TradingDecision instance and datetime timestamp
+    dec = TradingDecision(symbol="DECTEST", action="BUY", confidence=0.9, reasoning=["test"])
+    decision_buffer.add_decision(dec)
+    assert decision_buffer.get_latest_decision("DECTEST").action == "BUY"
+
+    # DecisionBuffer with datetime
+    decision_buffer.add_decision("DECTEST2", "SELL", 0.8, ["test2"], timestamp=now_dt)
+    assert decision_buffer.get_latest_decision("DECTEST2").action == "SELL"
+
+    # Non-existent decision
+    assert decision_buffer.get_latest_decision("NONEXISTENT") is None

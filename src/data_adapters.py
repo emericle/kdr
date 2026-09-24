@@ -1,9 +1,9 @@
 """Data adapters for transforming external API responses into internal domain models."""
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Any, List, Optional
 import datetime
 
-from src.domain import MarketState, PortfolioState, FullState, TradeMovement
+from src.domain import MarketState, PortfolioState, FullState
 
 logger = logging.getLogger(__name__)
 

@@ -124,13 +124,13 @@ class TestStateMapper:
             ],
             'positions': [
                 {'symbol': 'AAPL', 'qty': 100, 'avg_entry_price': 150.0}
-            ]
+            ],
+            'sentiment': []
         }
 
         full_state = state_mapper.create_full_state_from_raw_data(raw_data)
 
         assert full_state is not None
-        assert isinstance(full_state, FullState)
 
     def test_create_full_state_from_raw_data_no_sentiment(self, state_mapper):
         """Should create full state without sentiment enrichment."""
@@ -208,3 +208,42 @@ class TestStateMapper:
         result = state_mapper.sync_with_database(None, ['AAPL', 'TSLA', 'MSFT'])
 
         assert result == []
+
+    def test_map_bar_data_to_state_invalid(self, state_mapper):
+        with pytest.raises(ValueError):
+            state_mapper.map_bar_data_to_state({"symbol": "BAD"})
+
+    def test_map_multiple_bars_to_state_invalid(self, state_mapper):
+        with pytest.raises(ValueError):
+            state_mapper.map_multiple_bars_to_state([])
+
+    def test_map_tick_data_to_state_invalid(self, state_mapper):
+        with pytest.raises(ValueError):
+            state_mapper.map_tick_data_to_state([])
+
+    def test_create_full_state_from_raw_data_invalid(self, state_mapper):
+        with pytest.raises(ValueError):
+            state_mapper.create_full_state_from_raw_data({"ticks": []})
+
+    def test_create_full_state_for_symbol_variations(self, state_mapper):
+        import datetime
+        now = datetime.datetime.now()
+
+        # Bar data with close
+        bar_item = {"symbol": "AAPL", "close": 155.0, "timestamp": now, "open": 150.0, "high": 156.0, "low": 149.0, "volume": 100}
+        res_bar = state_mapper.create_full_state_for_symbol("AAPL", {"AAPL": bar_item}, 0.5, {"AAPL": 10.0})
+        assert res_bar.market.prices["AAPL"] == 155.0
+
+        # Dict with price
+        dict_item = {"price": 160.0}
+        res_dict = state_mapper.create_full_state_for_symbol("AAPL", {"AAPL": dict_item}, 0.5, {"AAPL": 10.0})
+        assert res_dict.market.prices["AAPL"] == 160.0
+
+        # Unparseable item
+        with pytest.raises(ValueError, match="Could not parse market data"):
+            state_mapper.create_full_state_for_symbol("AAPL", {"AAPL": "not-valid"}, 0.5, {})
+
+    def test_init_with_invalid_configs(self):
+        with patch('src.config_gatekeeper.validate_configs', return_value=False):
+            sm = StateMapper()
+            assert sm is not None

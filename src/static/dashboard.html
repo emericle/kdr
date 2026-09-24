@@ -940,11 +940,12 @@
                             if (symObj.currentPrice > 0) {
                                 const hist = tickHistoryMap[symObj.symbol];
                                 const lastItem = hist[hist.length - 1];
-                                if (!lastItem || lastItem.price !== symObj.currentPrice) {
+                                const nowTs = data.timestamp ? (data.timestamp < 1e11 ? data.timestamp * 1000 : data.timestamp) : Date.now();
+                                if (!lastItem || (nowTs - lastItem.timestamp >= 2000) || lastItem.price !== symObj.currentPrice) {
                                     hist.push({
-                                        time: data.time_str || new Date().toLocaleTimeString(),
+                                        time: data.time_str || new Date(nowTs).toLocaleTimeString(),
                                         price: symObj.currentPrice,
-                                        timestamp: data.timestamp ? data.timestamp * 1000 : Date.now()
+                                        timestamp: nowTs
                                     });
                                     if (hist.length > 500) hist.shift();
                                 }
@@ -979,7 +980,7 @@
                             const detail = await res.json();
                             if (detail.ticks && detail.ticks.length) {
                                 tickHistoryMap[symbol] = detail.ticks.map(t => ({
-                                    time: t.time_str,
+                                    time: t.time_str || (t.timestamp ? new Date(t.timestamp < 1e11 ? t.timestamp * 1000 : t.timestamp).toLocaleTimeString() : ''),
                                     price: t.price,
                                     timestamp: t.timestamp ? (t.timestamp < 1e11 ? t.timestamp * 1000 : t.timestamp) : Date.now()
                                 }));
@@ -995,10 +996,27 @@
 
                 async function selectSymbol(symbol) {
                     selectedSymbol.value = symbol;
-                    // Fetch recent / historical data from REST endpoint
-                    await fetchSymbolData(symbol);
+                    // Seed initial tick if none exists yet but summary has a live price
+                    if (!tickHistoryMap[symbol] || tickHistoryMap[symbol].length === 0) {
+                        const symData = symbolsMap[symbol];
+                        if (symData && symData.currentPrice > 0) {
+                            tickHistoryMap[symbol] = [{
+                                time: lastTimeStr.value || new Date().toLocaleTimeString(),
+                                price: symData.currentPrice,
+                                timestamp: Date.now()
+                            }];
+                        }
+                    }
+
+                    // Render immediately with available data so the user never waits
                     await nextTick();
                     initChart();
+
+                    // Concurrently fetch historical/buffer ticks to augment the chart
+                    await fetchSymbolData(symbol);
+                    if (selectedSymbol.value === symbol) {
+                        initChart();
+                    }
                 }
 
                 async function onDurationChange() {
@@ -1017,40 +1035,53 @@
                 }
 
                 function getFilteredHistory(hist) {
+                    if (!hist || !hist.length) return [];
                     const startTs = getDurationRange();
-                    if (!startTs) return hist;
-                    return hist.filter(point => {
-                        const ts = point.timestamp || (point.time ? new Date(point.time).getTime() : 0);
-                        return !ts || ts >= startTs;
-                    });
+                    let filtered = hist;
+                    if (startTs) {
+                        filtered = hist.filter(point => {
+                            const ts = point.timestamp || (point.time ? new Date(point.time).getTime() : 0);
+                            return !ts || ts >= startTs;
+                        });
+                    }
+                    // If filtering resulted in 0 points but we have history, fall back to recent points
+                    if (!filtered.length && hist.length > 0) {
+                        filtered = hist.slice(-100);
+                    }
+                    return filtered;
                 }
 
                 function computeYAxisBounds(filteredHistory, ma200 = [], ma50 = []) {
-                    const values = [];
-                    filteredHistory.forEach(h => {
-                        if (typeof h.price === 'number' && !isNaN(h.price)) {
-                            values.push(h.price);
-                        }
-                    });
-                    ma200.forEach(v => {
-                        if (typeof v === 'number' && !isNaN(v) && v !== null) {
-                            values.push(v);
-                        }
-                    });
-                    ma50.forEach(v => {
-                        if (typeof v === 'number' && !isNaN(v) && v !== null) {
-                            values.push(v);
-                        }
-                    });
+                    let minVal = Infinity;
+                    let maxVal = -Infinity;
 
-                    if (!values.length) {
+                    for (let i = 0; i < filteredHistory.length; i++) {
+                        const p = filteredHistory[i].price;
+                        if (typeof p === 'number' && !isNaN(p)) {
+                            if (p < minVal) minVal = p;
+                            if (p > maxVal) maxVal = p;
+                        }
+                    }
+                    for (let i = 0; i < ma200.length; i++) {
+                        const v = ma200[i];
+                        if (typeof v === 'number' && !isNaN(v) && v !== null) {
+                            if (v < minVal) minVal = v;
+                            if (v > maxVal) maxVal = v;
+                        }
+                    }
+                    for (let i = 0; i < ma50.length; i++) {
+                        const v = ma50[i];
+                        if (typeof v === 'number' && !isNaN(v) && v !== null) {
+                            if (v < minVal) minVal = v;
+                            if (v > maxVal) maxVal = v;
+                        }
+                    }
+
+                    if (minVal === Infinity || maxVal === -Infinity) {
                         return { min: undefined, max: undefined };
                     }
 
-                    const minVal = Math.min(...values);
-                    const maxVal = Math.max(...values);
-
-                    // Add dynamic padding (e.g. 1.5% or at least 0.50) so ticks don't touch the top/bottom edges
+                    // Add dynamic padding so ticks don't touch the top/bottom edges
                     const spread = maxVal - minVal;
                     const padding = spread > 0 ? spread * 0.05 : Math.max(minVal * 0.01, 0.5);
 
@@ -1066,6 +1097,7 @@
 
                     if (chartInstance) {
                         chartInstance.destroy();
+                        chartInstance = null;
                     }
 
                     const sym = selectedSymbol.value;
@@ -1085,6 +1117,7 @@
 
                     const { ma200, ma50 } = calculateMovingAverages(filteredHistory);
                     const yBounds = computeYAxisBounds(filteredHistory, ma200, ma50);
+                    const isSinglePoint = filteredHistory.length <= 1;
 
                     const datasets = [{
                         label: `${sym} Price`,
@@ -1093,8 +1126,8 @@
                         backgroundColor: fillColor,
                         fill: true,
                         tension: 0.25,
-                        pointRadius: 3,
-                        pointHoverRadius: 6,
+                        pointRadius: isSinglePoint ? 6 : 3,
+                        pointHoverRadius: isSinglePoint ? 8 : 6,
                         borderWidth: 2
                     }];
 
@@ -1131,7 +1164,7 @@
                         options: {
                             responsive: true,
                             maintainAspectRatio: false,
-                            animation: { duration: 300 },
+                            animation: { duration: 200 },
                             plugins: {
                                 legend: {
                                     display: true,
@@ -1160,20 +1193,8 @@
                                     ticks: {
                                         color: '#64748b',
                                         maxRotation: 0,
-                                        callback: function(timestamp, index, values) {
-                                            const tickConfig = getTimeTickConfig();
-                                            const date = new Date(timestamp);
-                                            const ticks = [];
-                                            
-                                            // Only show ticks at interval boundaries
-                                            const visibleCount = Math.ceil(values.length / tickConfig.interval);
-                                            const adjustedIndex = Math.floor(index / tickConfig.interval);
-                                            
-                                            if (adjustedIndex < visibleCount) {
-                                                return tickConfig.format(timestamp);
-                                            }
-                                            return null;
-                                        }
+                                        autoSkip: true,
+                                        maxTicksLimit: 8
                                     },
                                     title: {
                                         display: true,
@@ -1187,7 +1208,7 @@
                                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                                     ticks: {
                                         color: '#64748b',
-                                        callback: (value) => `$${value.toFixed(2)}`
+                                        callback: (value) => `$${Number(value).toFixed(2)}`
                                     },
                                     title: {
                                         display: true,
@@ -1209,9 +1230,12 @@
 
                     // Filter by duration and update chart data
                     const filteredHistory = getFilteredHistory(hist);
+                    const isSinglePoint = filteredHistory.length <= 1;
 
                     chartInstance.data.labels = filteredHistory.map(h => h.time);
                     chartInstance.data.datasets[0].data = filteredHistory.map(h => h.price);
+                    chartInstance.data.datasets[0].pointRadius = isSinglePoint ? 6 : 3;
+                    chartInstance.data.datasets[0].pointHoverRadius = isSinglePoint ? 8 : 6;
 
                     const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
                     chartInstance.data.datasets[0].borderColor = isUp ? '#10b981' : '#ef4444';

@@ -111,5 +111,10 @@ class TestConfigGatekeeperEdgeCases(unittest.TestCase):
             os.environ.clear()
             os.environ.update(original_env)
 
+    def test_missing_keys_returns_false_when_no_exit(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = validate_configs(exit_on_error=False)
+            self.assertFalse(result)
+
 if __name__ == '__main__':
     unittest.main()
