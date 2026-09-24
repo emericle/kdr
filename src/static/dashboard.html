@@ -837,6 +837,90 @@
                     };
                 }
 
+                function getTimeTickConfig() {
+                    const duration = selectedDuration.value;
+                    
+                    switch(duration) {
+                        case '1h':
+                            return {
+                                interval: 10, // Show every 10 minutes
+                                format: (timestamp) => {
+                                    const date = new Date(timestamp);
+                                    return date.toLocaleTimeString('en-US', { 
+                                        month: '2-digit', 
+                                        day: '2-digit', 
+                                        hour: '2-digit', 
+                                        minute: '2-digit' 
+                                    });
+                                }
+                            };
+                        case '24h':
+                            return {
+                                interval: 2, // Show every 2 hours
+                                format: (timestamp) => {
+                                    const date = new Date(timestamp);
+                                    return date.toLocaleTimeString('en-US', { 
+                                        month: '2-digit', 
+                                        day: '2-digit', 
+                                        hour: '2-digit',
+                                        minute: '00',
+                                        hour12: false
+                                    });
+                                }
+                            };
+                        case '5d':
+                            return {
+                                interval: 6, // Show every 6 hours
+                                format: (timestamp) => {
+                                    const date = new Date(timestamp);
+                                    return date.toLocaleString('en-US', { 
+                                        month: '2-digit', 
+                                        day: '2-digit', 
+                                        hour: '2-digit',
+                                        minute: '00',
+                                        hour12: false
+                                    });
+                                }
+                            };
+                        case '30d':
+                            return {
+                                interval: 1, // Show every 1 day
+                                format: (timestamp) => {
+                                    const date = new Date(timestamp);
+                                    return date.toLocaleDateString('en-US', { 
+                                        month: 'short', 
+                                        day: 'numeric' 
+                                    });
+                                }
+                            };
+                        case '1y':
+                            return {
+                                interval: 1, // Show every 1 month
+                                format: (timestamp) => {
+                                    const date = new Date(timestamp);
+                                    return date.toLocaleDateString('en-US', { 
+                                        month: 'short' 
+                                    });
+                                }
+                            };
+                        case 'ytd':
+                            return {
+                                interval: 1, // Show every 1 month
+                                format: (timestamp) => {
+                                    const date = new Date(timestamp);
+                                    return date.toLocaleDateString('en-US', { 
+                                        month: 'short' 
+                                    });
+                                }
+                            };
+                        default:
+                            return {
+                                interval: 1,
+                                format: (timestamp) => new Date(timestamp).toLocaleTimeString()
+                            };
+                    }
+                }
+
                 function handleIncomingData(data) {
                     if (data.time_str) {
                         lastTimeStr.value = data.time_str;
@@ -1073,7 +1157,24 @@
                             scales: {
                                 x: {
                                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                                    ticks: { color: '#64748b', maxRotation: 0 },
+                                    ticks: {
+                                        color: '#64748b',
+                                        maxRotation: 0,
+                                        callback: function(timestamp, index, values) {
+                                            const tickConfig = getTimeTickConfig();
+                                            const date = new Date(timestamp);
+                                            const ticks = [];
+                                            
+                                            // Only show ticks at interval boundaries
+                                            const visibleCount = Math.ceil(values.length / tickConfig.interval);
+                                            const adjustedIndex = Math.floor(index / tickConfig.interval);
+                                            
+                                            if (adjustedIndex < visibleCount) {
+                                                return tickConfig.format(timestamp);
+                                            }
+                                            return null;
+                                        }
+                                    },
                                     title: {
                                         display: true,
                                         text: 'Time',
