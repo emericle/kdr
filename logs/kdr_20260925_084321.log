@@ -1,0 +1,64 @@
+2026-09-25 08:43:22,621 - DataIngestion - INFO - Starting KDR Data Ingestion Pipeline
+2026-09-25 08:43:22,621 - DataIngestion - INFO - Log file: /Users/emericle/src/slop_factory/kdr/logs/kdr_20260925_084322.log
+2026-09-25 08:43:22,662 - DataIngestion - INFO - Initializing database...
+2026-09-25 08:43:22,662 - src.database - INFO - Initialising database tables...
+2026-09-25 08:43:22,901 - src.database - INFO - Database initialized successfully.
+2026-09-25 08:43:22,901 - DataIngestion - INFO - Database initialization complete: Engine(postgresql://slop:***@pinky.local:5432/trading_db)
+2026-09-25 08:43:22,901 - DataIngestion - INFO - DB Writer Worker started.
+2026-09-25 08:43:22,901 - DataIngestion - INFO - Domain state mapper attached for data transformation
+2026-09-25 08:43:22,901 - DataIngestion - INFO - Producer and Consumer threads initialized.
+2026-09-25 08:43:22,902 - DataIngestion - INFO - Data pipeline ready: Alpaca → Adapter → Domain State → DB
+2026-09-25 08:43:22,902 - WebServer - INFO - Real-time Trading Dashboard active at http://localhost:8001
+2026-09-25 08:43:22,902 - DataIngestion - INFO - Real-time Dashboard available at: http://localhost:8001
+2026-09-25 08:43:22,902 - DataIngestion - INFO - Alpaca Stream Processor started.
+2026-09-25 08:43:22,902 - DataIngestion - INFO - State mapper initialized for domain state mapping
+2026-09-25 08:43:22,929 - WebServer - INFO - WebSocket broadcast loop started (1.0s interval)
+/Users/emericle/src/slop_factory/kdr/.venv/lib/python3.14/site-packages/alpaca_trade_api/entity.py:147: UserWarning: The 'unit' keyword is only used when the Timestamp input is an integer or float, not str. To specify the storage unit of the output use `ts.as_unit(unit)`
+  return pd.Timestamp(val, tz=NY, unit=self._unit)
+2026-09-25 08:43:23,194 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:23,195 - DataIngestion - INFO - Running in continuous mode for symbols: ['AAPL', 'TSLA', 'BTC']. Press Ctrl+C to stop.
+2026-09-25 08:43:23,195 - alpaca_trade_api.stream - INFO - started stock data stream
+2026-09-25 08:43:23,195 - alpaca_trade_api.stream - INFO - starting stock data websocket connection
+2026-09-25 08:43:23,197 - alpaca_trade_api.stream - INFO - started crypto data stream
+2026-09-25 08:43:23,197 - alpaca_trade_api.stream - INFO - starting crypto data websocket connection
+2026-09-25 08:43:23,548 - alpaca_trade_api.stream - INFO - connected to: wss://stream.data.alpaca.markets/v2/iex
+2026-09-25 08:43:23,549 - alpaca_trade_api.stream - INFO - connected to: wss://stream.data.alpaca.markets/v1beta3/crypto/us
+2026-09-25 08:43:23,624 - alpaca_trade_api.stream - INFO - subscribed to trades: ['AAPL', 'TSLA'], quotes: [], bars: ['AAPL', 'TSLA'], updatedBars: [], dailyBars: [], statuses: [], lulds: [], cancelErrors: ['AAPL', 'TSLA'], corrections: ['AAPL', 'TSLA']
+2026-09-25 08:43:23,625 - alpaca_trade_api.stream - INFO - subscribed to trades: ['BTC/USD'], quotes: [], bars: ['BTC/USD'], updatedBars: [], dailyBars: [], orderbooks: []
+2026-09-25 08:43:27,683 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:27,793 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:28,336 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:31,469 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:33,723 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:33,723 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:36,130 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:36,145 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:36,357 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:36,368 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:37,304 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:40,506 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:40,506 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:43,547 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:44,914 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:44,922 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:45,724 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:46,634 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:46,672 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:47,042 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:47,101 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:49,421 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:49,421 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:49,421 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:52,347 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:52,445 - DataIngestion - INFO - Received signal 15, initiating graceful shutdown...
+2026-09-25 08:43:52,445 - WebServer - INFO - Web server shutdown requested.
+2026-09-25 08:43:52,636 - DataIngestion - INFO - Stopping stream processor...
+2026-09-25 08:43:54,234 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:54,234 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:43:54,324 - alpaca_trade_api.stream - INFO - stock data stream stopped
+2026-09-25 08:43:54,510 - alpaca_trade_api.stream - INFO - crypto data stream stopped
+2026-09-25 08:43:54,522 - DataIngestion - INFO - Alpaca Stream Processor stopped.
+2026-09-25 08:43:54,523 - DataIngestion - INFO - Worker command sent, waiting for DB writer...
+2026-09-25 08:43:54,523 - DataIngestion - INFO - Worker finished.
+Configuration validated successfully.
+Configuration validated successfully.

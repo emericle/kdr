@@ -1,0 +1,5 @@
+2026-09-25 08:46:34,814 - DataIngestion - INFO - Starting KDR Data Ingestion Pipeline
+2026-09-25 08:46:34,814 - DataIngestion - INFO - Log file: /Users/emericle/src/slop_factory/kdr/logs/kdr_20260925_084634.log
+usage: scraper.py [-h] [--debug] [--continuous] [--no-continuous]
+                  [--symbols SYMBOLS] [--duration DURATION] [--mock]
+scraper.py: error: unrecognized arguments: stop

@@ -1,0 +1,38 @@
+2026-09-25 08:57:08,750 - DataIngestion - INFO - Starting KDR Data Ingestion Pipeline
+2026-09-25 08:57:08,750 - DataIngestion - INFO - Log file: /Users/emericle/src/slop_factory/kdr/logs/kdr_20260925_085708.log
+2026-09-25 08:57:08,785 - DataIngestion - INFO - Initializing database...
+2026-09-25 08:57:08,785 - src.database - INFO - Initialising database tables...
+2026-09-25 08:57:09,034 - src.database - INFO - Database initialized successfully.
+2026-09-25 08:57:09,034 - DataIngestion - INFO - Database initialization complete: Engine(postgresql://slop:***@pinky.local:5432/trading_db)
+2026-09-25 08:57:09,034 - DataIngestion - INFO - DB Writer Worker started.
+2026-09-25 08:57:09,034 - DataIngestion - INFO - Domain state mapper attached for data transformation
+2026-09-25 08:57:09,034 - DataIngestion - INFO - Producer and Consumer threads initialized.
+2026-09-25 08:57:09,034 - DataIngestion - INFO - Data pipeline ready: Alpaca → Adapter → Domain State → DB
+2026-09-25 08:57:09,035 - WebServer - INFO - Real-time Trading Dashboard active at http://localhost:8001
+2026-09-25 08:57:09,035 - DataIngestion - INFO - Real-time Dashboard available at: http://localhost:8001
+2026-09-25 08:57:09,036 - DataIngestion - INFO - Alpaca Stream Processor started.
+2026-09-25 08:57:09,036 - DataIngestion - INFO - State mapper initialized for domain state mapping
+2026-09-25 08:57:09,061 - WebServer - INFO - WebSocket broadcast loop started (1.0s interval)
+/Users/emericle/src/slop_factory/kdr/.venv/lib/python3.14/site-packages/alpaca_trade_api/entity.py:147: UserWarning: The 'unit' keyword is only used when the Timestamp input is an integer or float, not str. To specify the storage unit of the output use `ts.as_unit(unit)`
+  return pd.Timestamp(val, tz=NY, unit=self._unit)
+2026-09-25 08:57:09,281 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:57:09,282 - DataIngestion - INFO - Running in continuous mode for symbols: ['AAPL', 'TSLA', 'BTC']. Press Ctrl+C to stop.
+2026-09-25 08:57:09,282 - alpaca_trade_api.stream - INFO - started stock data stream
+2026-09-25 08:57:09,282 - alpaca_trade_api.stream - INFO - starting stock data websocket connection
+2026-09-25 08:57:09,284 - alpaca_trade_api.stream - INFO - started crypto data stream
+2026-09-25 08:57:09,284 - alpaca_trade_api.stream - INFO - starting crypto data websocket connection
+2026-09-25 08:57:09,632 - alpaca_trade_api.stream - INFO - connected to: wss://stream.data.alpaca.markets/v1beta3/crypto/us
+2026-09-25 08:57:09,640 - alpaca_trade_api.stream - INFO - connected to: wss://stream.data.alpaca.markets/v2/iex
+2026-09-25 08:57:09,705 - alpaca_trade_api.stream - INFO - subscribed to trades: ['BTC/USD'], quotes: [], bars: ['BTC/USD'], updatedBars: [], dailyBars: [], orderbooks: []
+2026-09-25 08:57:09,718 - alpaca_trade_api.stream - INFO - subscribed to trades: ['AAPL', 'TSLA'], quotes: [], bars: ['AAPL', 'TSLA'], updatedBars: [], dailyBars: [], statuses: [], lulds: [], cancelErrors: ['AAPL', 'TSLA'], corrections: ['AAPL', 'TSLA']
+2026-09-25 08:57:09,879 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:57:11,153 - DataIngestion - INFO - Received signal 15, initiating graceful shutdown...
+2026-09-25 08:57:11,153 - WebServer - INFO - Web server shutdown requested.
+2026-09-25 08:57:11,305 - DataIngestion - INFO - Stopping stream processor...
+2026-09-25 08:57:12,316 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'
+2026-09-25 08:57:12,404 - alpaca_trade_api.stream - INFO - stock data stream stopped
+2026-09-25 08:57:13,316 - DataIngestion - INFO - Alpaca Stream Processor stopped.
+2026-09-25 08:57:13,316 - DataIngestion - INFO - Worker command sent, waiting for DB writer...
+2026-09-25 08:57:13,317 - DataIngestion - INFO - Worker finished.
+Configuration validated successfully.
+Configuration validated successfully.

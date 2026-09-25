@@ -259,6 +259,89 @@
             font-weight: 500;
         }
 
+        /* Market Index Boxes */
+        .market-indexes-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .market-index-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s ease-in-out;
+        }
+
+        .market-index-card:hover {
+            background-color: var(--bg-card-hover);
+            border-color: var(--color-accent);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .index-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .index-ticker {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .index-price {
+            font-size: 1.75rem;
+            font-weight: 800;
+            font-family: monospace;
+            margin-bottom: 4px;
+        }
+
+        .index-change {
+            font-size: 0.9rem;
+            font-weight: 600;
+            font-family: monospace;
+        }
+
+        .index-change.positive { color: var(--color-buy); }
+        .index-change.negative { color: var(--color-sell); }
+        .index-change.neutral { color: var(--text-secondary); }
+
+        .index-change-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .index-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .index-stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+        }
+
+        .index-stat-value {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
         /* Drill-Down View */
         .drilldown-view {
             animation: fadeIn 0.2s ease-in-out;
@@ -548,6 +631,35 @@
                     </div>
                 </div>
 
+                <!-- Market Indexes Display -->
+                <div class="market-indexes-row">
+                    <div v-for="idx in marketIndexes" :key="idx.index" class="market-index-card">
+                        <div class="index-header">
+                            <span>{{ idx.index }}</span>
+                            <span class="index-ticker">{{ idx.ticker }}</span>
+                        </div>
+                        <div class="index-price">${{ formatPrice(idx.currentPrice) }}</div>
+                        <div class="index-change" :class="getChangeClass(idx.changePercent)">
+                            {{ formatChange(idx.changePercent) }}%
+                            <span v-if="idx.change !== 0" class="change-abs">
+                                ({{ idx.change > 0 ? '+' : '' }}${{ formatNumber(Math.abs(idx.change)) }})
+                            </span>
+                        </div>
+                        <div class="index-change-row">
+                            <div class="index-stat">
+                                <span class="index-stat-label">Price</span>
+                                <span class="index-stat-value">${{ formatPrice(idx.currentPrice) }}</span>
+                            </div>
+                            <div class="index-stat">
+                                <span class="index-stat-label">% Change</span>
+                                <span class="index-stat-value" :class="getChangeClass(idx.changePercent)">
+                                    {{ formatChange(idx.changePercent) }}%
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Symbols Grid -->
                 <div v-if="symbols.length > 0" class="symbols-grid">
                     <div 
@@ -709,6 +821,7 @@
                 const selectedDuration = ref('24h');
                 const show200DayMA = ref(false);
                 const show50DayMA = ref(false);
+                const marketIndexes = ref([]);
 
                 let chartInstance = null;
                 let ws = null;
@@ -926,6 +1039,10 @@
                         lastTimeStr.value = data.time_str;
                     }
 
+                    if (data.marketIndexes && Array.isArray(data.marketIndexes)) {
+                        marketIndexes.value = data.marketIndexes;
+                    }
+
                     if (data.symbols && Array.isArray(data.symbols)) {
                         data.symbols.forEach(symObj => {
                             symbolsMap[symObj.symbol] = {
@@ -938,17 +1055,17 @@
                                 tickHistoryMap[symObj.symbol] = [];
                             }
                             if (symObj.currentPrice > 0) {
-                                const hist = tickHistoryMap[symObj.symbol];
-                                const lastItem = hist[hist.length - 1];
-                                const nowTs = data.timestamp ? (data.timestamp < 1e11 ? data.timestamp * 1000 : data.timestamp) : Date.now();
-                                if (!lastItem || (nowTs - lastItem.timestamp >= 2000) || lastItem.price !== symObj.currentPrice) {
-                                    hist.push({
-                                        time: data.time_str || new Date(nowTs).toLocaleTimeString(),
-                                        price: symObj.currentPrice,
-                                        timestamp: nowTs
-                                    });
-                                    if (hist.length > 500) hist.shift();
-                                }
+                                    const hist = tickHistoryMap[symObj.symbol];
+                                    const lastItem = hist[hist.length - 1];
+                                    const nowTs = data.timestamp ? (data.timestamp < 1e11 ? data.timestamp * 1000 : data.timestamp) : Date.now();
+                                    if (!lastItem || (nowTs - lastItem.timestamp >= 3000) || lastItem.price !== symObj.currentPrice) {
+                                        hist.push({
+                                            time: data.time_str || new Date(nowTs).toLocaleTimeString(),
+                                            price: symObj.currentPrice,
+                                            timestamp: nowTs
+                                        });
+                                        if (hist.length > 250) hist.shift();
+                                    }
                             }
                         });
 
@@ -1126,8 +1243,9 @@
                         backgroundColor: fillColor,
                         fill: true,
                         tension: 0.25,
-                        pointRadius: isSinglePoint ? 6 : 3,
-                        pointHoverRadius: isSinglePoint ? 8 : 6,
+                        pointRadius: isSinglePoint ? 6 : 2,
+                        pointHoverRadius: isSinglePoint ? 8 : 5,
+                        pointHitRadius: 4,
                         borderWidth: 2
                     }];
 

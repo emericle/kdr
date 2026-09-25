@@ -390,12 +390,26 @@ async def broadcast_loop(interval: float = 1.0):
                 symbol_summaries.append(summary)
                 decisions.append(rec)
 
+            # Get current market indexes
+            market_indexes = []
+            try:
+                indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+                for idx in indexes:
+                    try:
+                        index_data = await get_market_index(idx)
+                        market_indexes.append(index_data)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             payload = {
                 "type": "update",
                 "timestamp": time.time(),
                 "time_str": datetime.now().strftime("%H:%M:%S"),
                 "symbols": symbol_summaries,
-                "decisions": decisions
+                "decisions": decisions,
+                "market_indexes": market_indexes
             }
 
             await manager.broadcast_json(payload)
@@ -466,6 +480,124 @@ async def get_symbols():
         summary["recommendation"] = rec["action"]
         summary["confidence"] = rec["confidence"]
         results.append(summary)
+    return JSONResponse(results)
+
+
+@app.get("/api/market-index/{index}")
+async def get_market_index(index: str):
+    """
+    Returns real-time market index data for specific indices.
+    This data is not persisted but is fetched for real-time dashboard display.
+    """
+    index = index.upper()
+
+    # Map index symbols to standard ticker symbols used by external APIs
+    index_tickers = {
+        "VIX": "^VIX",  # CBOE Volatility Index
+        "DJIA": "^DJI", # Dow Jones Industrial Average
+        "SP500": "SPX", # S&P 500
+        "RUSSELL2000": "RUT" # Russell 2000
+    }
+
+    ticker = index_tickers.get(index, index)
+    if ticker.startswith("^"):
+        ticker = ticker[1:]
+
+    try:
+        # Use Alpaca API to get current data for the index
+        if _db_is_available:
+            from alpaca.data.timeframe import TimeFrame
+
+            # Try to get recent data for the index
+            start_date = datetime.now() - timedelta(days=2)
+            alpaca_data = await _query_historical_ticks_safe(
+                db=get_db_manager(),
+                symbol=ticker,
+                start_time=start_date,
+                limit=2
+            )
+
+            if alpaca_data and len(alpaca_data) >= 2:
+                latest = alpaca_data[-1]
+                previous = alpaca_data[-2]
+
+                current_price = latest.get("price", 0)
+                previous_close = previous.get("price", current_price)
+
+                change = current_price - previous_close
+                change_pct = (change / previous_close * 100) if previous_close > 0 else 0
+
+                return JSONResponse({
+                    "index": index,
+                    "ticker": ticker,
+                    "currentPrice": round(current_price, 2),
+                    "change": round(change, 2),
+                    "changePercent": round(change_pct, 2),
+                    "priceType": "current"
+                })
+
+        # Fallback: return current live tick if available in buffer
+        latest_tick = market_buffer.get_latest_tick(index)
+        if latest_tick:
+            prev_price = market_buffer.get_latest_tick(index).price
+            change = latest_tick.price - prev_price
+            change_pct = (change / prev_price * 100) if prev_price > 0 else 0
+
+            return JSONResponse({
+                "index": index,
+                "ticker": ticker,
+                "currentPrice": round(latest_tick.price, 2),
+                "change": round(change, 2),
+                "changePercent": round(change_pct, 2),
+                "priceType": "fallback"
+            })
+
+        # If we have no data, return zeros
+        return JSONResponse({
+            "index": index,
+            "ticker": ticker,
+            "currentPrice": 0.0,
+            "change": 0.0,
+            "changePercent": 0.0,
+            "priceType": "no_data"
+        })
+
+    except Exception as e:
+        logger.debug("Failed to fetch market index data for %s: %s", index, e)
+        return JSONResponse({
+            "index": index,
+            "ticker": ticker,
+            "currentPrice": 0.0,
+            "change": 0.0,
+            "changePercent": 0.0,
+            "priceType": "error"
+        })
+
+
+@app.get("/api/market-indexes")
+async def get_all_market_indexes():
+    """
+    Returns data for all market indexes (VIX, DJIA, S&P500, Russell 2000)
+    in a single request for efficiency.
+    """
+    indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+    results = []
+
+    for idx in indexes:
+        try:
+            data = await get_market_index(idx)
+            results.append(data)
+        except Exception as e:
+            logger.debug("Failed to fetch index %s: %s", idx, e)
+            results.append({
+                "index": idx,
+                "ticker": "",
+                "currentPrice": 0.0,
+                "change": 0.0,
+                "changePercent": 0.0,
+                "priceType": "error"
+            })
+
     return JSONResponse(results)
 
 
@@ -574,12 +706,26 @@ async def websocket_endpoint(websocket: WebSocket):
             summaries.append(s)
             decisions.append(r)
 
+        # Get initial market indexes
+        market_indexes = []
+        try:
+            indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+            for idx in indexes:
+                try:
+                    index_data = await get_market_index(idx)
+                    market_indexes.append(index_data)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         await websocket.send_json({
             "type": "init",
             "timestamp": time.time(),
             "time_str": datetime.now().strftime("%H:%M:%S"),
             "symbols": summaries,
-            "decisions": decisions
+            "decisions": decisions,
+            "market_indexes": market_indexes
         })
 
         while True:
