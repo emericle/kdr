@@ -3,7 +3,7 @@ import threading
 import queue
 import time
 import logging
-import datetime
+from datetime import datetime, timezone
 import sys
 import signal
 import argparse
@@ -87,7 +87,7 @@ class Tick:
     symbol: str
     price: float
     size: float
-    timestamp: datetime.datetime
+    timestamp: datetime
 
 class DataStreamBuffer:
     """Thread-safe buffer to hold ticks for aggregation with O(1) running OHLCV state and integer buckets."""
@@ -99,24 +99,24 @@ class DataStreamBuffer:
         self.lock = threading.Lock()
 
     @staticmethod
-    def _parse_timestamp(ts: Any) -> datetime.datetime:
+    def _parse_timestamp(ts: Any) -> datetime:
         if isinstance(ts, str):
-            return datetime.datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
         if isinstance(ts, (int, float)):
             if ts > 1e11:
-                return datetime.datetime.fromtimestamp(ts / 1e9, tz=datetime.timezone.utc)
-            return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
-        if isinstance(ts, datetime.datetime):
+                return datetime.fromtimestamp(ts / 1e9, tz=timezone.utc)
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        if isinstance(ts, datetime):
             return ts
-        return datetime.datetime.now()
+        return datetime.now()
 
     @staticmethod
-    def _minute_bucket(ts: datetime.datetime) -> int:
+    def _minute_bucket(ts: datetime) -> int:
         """Returns integer epoch minute bucket for fast numerical comparisons."""
         return int(ts.timestamp() // 60)
 
     @staticmethod
-    def _minute_key(ts: datetime.datetime) -> str:
+    def _minute_key(ts: datetime) -> str:
         """Minute key string generation."""
         return f"{ts.year:04d}-{ts.month:02d}-{ts.day:02d} {ts.hour:02d}:{ts.minute:02d}"
 
@@ -156,7 +156,7 @@ class DataStreamBuffer:
     def get_ready_bars(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
         # Returns bars that are older than current minute in O(1) per ready bar using integer comparison.
         with self.lock:
-            now = datetime.datetime.now()
+            now = datetime.now()
             current_bucket = self._minute_bucket(now)
             ready_data: Dict[str, Dict[str, Any]] = {}
             for symbol in symbols:
@@ -617,7 +617,7 @@ def run_worker_threads(
         if mock_fallback:
             for sym in resolved_symbols:
                 dummy_bar = {
-                    "timestamp": datetime.datetime.now(),
+                    "timestamp": datetime.now(),
                     "open": 150.0,
                     "high": 160.0,
                     "low": 140.0,
