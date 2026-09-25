@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # KDR Startup Script
-# Checks environment variables, sets up venv, and starts the scraper process
+# Checks environment variables, sets up venv, and starts the scraper process in background
 
 set -e  # Exit on error
 
@@ -9,6 +9,7 @@ set -e  # Exit on error
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Script directory
@@ -97,6 +98,59 @@ echo -e "${YELLOW}Installing dependencies...${NC}"
 pip install -r requirements.txt > /dev/null 2>&1
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 
+# Step 4: Run the Process (background with daemon support)
+echo ""
+echo -e "${YELLOW}[4/5]${NC} Starting KDR services in background..."
+
+# Create PID file for process management
+PID_FILE="${SCRIPT_DIR}/kdr.pid"
+LOG_FILE="${SCRIPT_DIR}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
+
+# Parse arguments
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" == "-d" ]; then
+        ARGS+=("--debug")
+        echo -e "${YELLOW}Debug mode enabled${NC}"
+    elif [ "$arg" == "--debug" ]; then
+        ARGS+=("--debug")
+        echo -e "${YELLOW}Debug mode enabled${NC}"
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+# Set PYTHONPATH to include the project root for module imports
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
+# Start the process in background and redirect output to log file
+echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
+echo -e "${BLUE}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
+echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
+echo ""
+
+# Run the main process in background
+nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
+PID=$!
+
+# Save PID
+echo $PID > "$PID_FILE"
+
+# Wait a moment to verify process started
+sleep 2
+
+if ps -p $PID > /dev/null; then
+    echo -e "${GREEN}✓ KDR service started successfully (PID: $PID)${NC}"
+    echo -e "${GREEN}✓ Log file: $LOG_FILE${NC}"
+    echo ""
+    echo -e "${YELLOW}To check status, run: tail -f $LOG_FILE${NC}"
+    echo -e "${YELLOW}To stop the service, run: ./start.sh stop${NC}"
+else
+    echo -e "${RED}✗ Failed to start KDR service${NC}"
+    echo -e "${RED}Check log file for details: $LOG_FILE${NC}"
+    exit 1
+fi
+
 # Step 4: Run the Process
 echo ""
 echo -e "${YELLOW}[4/4]${NC} Starting KDR services..."
@@ -123,6 +177,55 @@ echo ""
 echo -e "${GREEN}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
 echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
 echo ""
+
+# Step 5: Stop Functionality
+stop_kdr() {
+    local PID_FILE="${SCRIPT_DIR}/kdr.pid"
+
+    if [ ! -f "$PID_FILE" ]; then
+        echo -e "${RED}✗ No KDR service is running${NC}"
+        exit 1
+    fi
+
+    local PID=$(cat "$PID_FILE")
+
+    if ! ps -p $PID > /dev/null 2>&1; then
+        echo -e "${RED}✗ Process $PID is not running${NC}"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+
+    echo -e "${YELLOW}Stopping KDR service (PID: $PID)...${NC}"
+    kill -TERM $PID
+
+    # Wait for process to terminate
+    local count=0
+    while ps -p $PID > /dev/null 2>&1; do
+        sleep 1
+        count=$((count + 1))
+        if [ $count -ge 30 ]; then
+            echo -e "${RED}✗ Process did not terminate gracefully${NC}"
+            kill -KILL $PID
+            sleep 2
+            break
+        fi
+    done
+
+    rm -f "$PID_FILE"
+
+    if ps -p $PID > /dev/null 2>&1; then
+        echo -e "${RED}✗ Failed to stop KDR service${NC}"
+        exit 1
+    else
+        echo -e "${GREEN}✓ KDR service stopped${NC}"
+    fi
+}
+
+# Parse command line arguments
+if [ "$1" == "stop" ]; then
+    stop_kdr
+    exit 0
+fi
 
 # Run the main process
 # Set PYTHONPATH to include the project root for module imports

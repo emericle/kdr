@@ -53,12 +53,26 @@ except ImportError:
 # Configure Logging
 DEBUG_MODE = False  # Default to false unless specified
 
+# Create log directory
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(log_dir, exist_ok=True)
+
+# Log file with timestamp
+from datetime import datetime
+log_filename = os.path.join(log_dir, f"kdr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+# Configure logging to both file and console
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_filename, encoding='utf-8')
+    ]
 )
 logger = logging.getLogger("DataIngestion")
+logger.info(f"Starting KDR Data Ingestion Pipeline")
+logger.info(f"Log file: {log_filename}")
 
 def setup_logging(debug: bool = False):
     global DEBUG_MODE
