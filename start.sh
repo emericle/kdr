@@ -98,90 +98,19 @@ echo -e "${YELLOW}Installing dependencies...${NC}"
 pip install -r requirements.txt > /dev/null 2>&1
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 
-# Step 4: Run the Process (background with daemon support)
+# Step 4: Start KDR Service in Background
 echo ""
-echo -e "${YELLOW}[4/5]${NC} Starting KDR services in background..."
+echo -e "${YELLOW}[4/4]${NC} Starting KDR service in background..."
+
+# Create logs directory if it doesn't exist
+mkdir -p logs
 
 # Create PID file for process management
 PID_FILE="${SCRIPT_DIR}/kdr.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
 
-# Parse arguments
-ARGS=()
-for arg in "$@"; do
-    if [ "$arg" == "-d" ]; then
-        ARGS+=("--debug")
-        echo -e "${YELLOW}Debug mode enabled${NC}"
-    elif [ "$arg" == "--debug" ]; then
-        ARGS+=("--debug")
-        echo -e "${YELLOW}Debug mode enabled${NC}"
-    else
-        ARGS+=("$arg")
-    fi
-done
-
-# Set PYTHONPATH to include the project root for module imports
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-
-# Start the process in background and redirect output to log file
-echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
-echo -e "${BLUE}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
-echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
-echo ""
-
-# Run the main process in background
-nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
-PID=$!
-
-# Save PID
-echo $PID > "$PID_FILE"
-
-# Wait a moment to verify process started
-sleep 2
-
-if ps -p $PID > /dev/null; then
-    echo -e "${GREEN}✓ KDR service started successfully (PID: $PID)${NC}"
-    echo -e "${GREEN}✓ Log file: $LOG_FILE${NC}"
-    echo ""
-    echo -e "${YELLOW}To check status, run: tail -f $LOG_FILE${NC}"
-    echo -e "${YELLOW}To stop the service, run: ./start.sh stop${NC}"
-else
-    echo -e "${RED}✗ Failed to start KDR service${NC}"
-    echo -e "${RED}Check log file for details: $LOG_FILE${NC}"
-    exit 1
-fi
-
-# Step 4: Run the Process
-echo ""
-echo -e "${YELLOW}[4/4]${NC} Starting KDR services..."
-
-# Parse arguments
-ARGS=()
-for arg in "$@"; do
-    if [ "$arg" == "-d" ]; then
-        ARGS+=("--debug")
-        echo -e "${YELLOW}Debug mode enabled${NC}"
-    elif [ "$arg" == "--debug" ]; then
-        ARGS+=("--debug")
-        echo -e "${YELLOW}Debug mode enabled${NC}"
-    else
-        ARGS+=("$arg")
-    fi
-done
-
-echo ""
-echo -e "${GREEN}══════════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
-echo -e "${GREEN}══════════════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${GREEN}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
-echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
-echo ""
-
-# Step 5: Stop Functionality
+# Function to stop the service
 stop_kdr() {
-    local PID_FILE="${SCRIPT_DIR}/kdr.pid"
-
     if [ ! -f "$PID_FILE" ]; then
         echo -e "${RED}✗ No KDR service is running${NC}"
         exit 1
@@ -227,8 +156,52 @@ if [ "$1" == "stop" ]; then
     exit 0
 fi
 
-# Run the main process
+# Parse arguments for the main process
+ARGS=()
+for arg in "$@"; do
+    # Skip unsupported short flags
+    if [ "$arg" == "-d" ]; then
+        echo -e "${YELLOW}Note: Use --debug (not -d) for debug mode${NC}"
+        continue
+    fi
+    # Include supported flags
+    if [ "$arg" == "--debug" ]; then
+        ARGS+=("$arg")
+        echo -e "${YELLOW}Debug mode enabled${NC}"
+    else
+        ARGS+=("$arg")
+    fi
+done
+
 # Set PYTHONPATH to include the project root for module imports
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-source .venv/bin/activate
-exec python src/scraper.py "${ARGS[@]}"
+
+# Start the process in background and redirect output to log file
+echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
+echo -e "${BLUE}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
+echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
+echo ""
+
+# Run the main process in background
+nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
+PID=$!
+
+# Save PID
+echo $PID > "$PID_FILE"
+
+# Wait a moment to verify process started
+sleep 2
+
+if ps -p $PID > /dev/null; then
+    echo -e "${GREEN}✓ KDR service started successfully (PID: $PID)${NC}"
+    echo -e "${GREEN}✓ Log file: $LOG_FILE${NC}"
+    echo ""
+    echo -e "${YELLOW}To check status, run: tail -f $LOG_FILE${NC}"
+    echo -e "${YELLOW}To stop the service, run: ./start.sh stop${NC}"
+else
+    echo -e "${RED}✗ Failed to start KDR service${NC}"
+    echo -e "${RED}Check log file for details: $LOG_FILE${NC}"
+    exit 1
+fi
+
+exit 0
