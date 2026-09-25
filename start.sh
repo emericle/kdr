@@ -14,6 +14,7 @@ NC='\033[0m' # No Color
 
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+echo "SCRIPT_DIR=${SCRIPT_DIR}"
 cd "$SCRIPT_DIR"
 
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
@@ -91,11 +92,12 @@ source .venv/bin/activate
 
 # Upgrade pip
 echo -e "${YELLOW}Upgrading pip...${NC}"
-pip install --upgrade pip setuptools wheel > /dev/null 2>&1
+python3.14 -m pip install --upgrade pip setuptools wheel 
+#pip install --upgrade pip setuptools wheel > /dev/null 2>&1
 
 # Install/update requirements
 echo -e "${YELLOW}Installing dependencies...${NC}"
-pip install -r requirements.txt > /dev/null 2>&1
+python -m pip install -r requirements.txt > /dev/null 2>&1
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 
 # Step 4: Start KDR Service in Background
@@ -168,8 +170,8 @@ for arg in "$@"; do
     if [ "$arg" == "--debug" ]; then
         ARGS+=("$arg")
         echo -e "${YELLOW}Debug mode enabled${NC}"
-    else
-        ARGS+=("$arg")
+    elif [ "$arg" == "start" ]; then
+        echo -e "${GREEN}✓ Starting KDR service${NC}"
     fi
 done
 
