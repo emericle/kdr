@@ -939,12 +939,14 @@
                         }
                     };
 
-                    ws.onclose = () => {
+                    ws.onclose = (event) => {
+                        console.warn('WebSocket closed:', event.code, event.reason || 'no reason provided');
                         connected.value = false;
                         setTimeout(connectWebSocket, 2000);
                     };
 
-                    ws.onerror = () => {
+                    ws.onerror = (error) => {
+                        console.error('WebSocket error encountered:', error);
                         connected.value = false;
                         ws.close();
                     };
@@ -1039,8 +1041,9 @@
                         lastTimeStr.value = data.time_str;
                     }
 
-                    if (data.marketIndexes && Array.isArray(data.marketIndexes)) {
-                        marketIndexes.value = data.marketIndexes;
+                    const indexes = data.marketIndexes || data.market_indexes;
+                    if (indexes && Array.isArray(indexes)) {
+                        marketIndexes.value = indexes;
                     }
 
                     if (data.symbols && Array.isArray(data.symbols)) {
