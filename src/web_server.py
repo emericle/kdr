@@ -155,6 +155,23 @@ class MarketDataBuffer:
                 "lastUpdate": datetime.fromtimestamp(history[-1].timestamp).strftime("%H:%M:%S")
             }
 
+    def get_price_and_change(self, symbol: str) -> Optional[Dict[str, float]]:
+        """Thread-safe retrieval of current price, daily change, and percent change."""
+        symbol = symbol.upper()
+        with self._lock:
+            history = self._history.get(symbol)
+            if not history:
+                return None
+            current_price = history[-1].price
+            open_price = self._open_prices.get(symbol, history[0].price)
+            change = current_price - open_price
+            change_pct = (change / open_price * 100.0) if open_price > 0 else 0.0
+            return {
+                "currentPrice": current_price,
+                "change": change,
+                "changePercent": change_pct
+            }
+
 
 class DecisionBuffer:
     """Thread-safe buffer storing trading decisions."""
@@ -397,17 +414,7 @@ async def broadcast_loop(interval: float = 1.0):
                 decisions.append(rec)
 
             # Get current market indexes
-            market_indexes = []
-            try:
-                indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
-                for idx in indexes:
-                    try:
-                        index_data = await get_market_index(idx)
-                        market_indexes.append(index_data)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            market_indexes = await fetch_tracked_indexes()
 
             payload = {
                 "type": "update",
@@ -538,25 +545,15 @@ async def get_market_index(index: str):
     try:
         # First priority: check live market_buffer for candidate symbols
         for sym in candidates:
-            latest_tick = market_buffer.get_latest_tick(sym)
-            if latest_tick:
-                current_price = latest_tick.price
-                # Calculate daily gain/loss from open price or earliest tick
-                open_price = market_buffer._open_prices.get(sym)
-                if open_price is None or open_price <= 0:
-                    ticks = market_buffer.get_ticks(sym, limit=100)
-                    open_price = float(ticks[0].get("price", current_price)) if ticks else current_price
-
-                change = current_price - open_price
-                change_pct = (change / open_price * 100) if open_price > 0 else 0.0
-
+            stats = market_buffer.get_price_and_change(sym)
+            if stats:
                 return {
                     "index": index,
                     "displayName": display_name,
                     "ticker": clean_ticker,
-                    "currentPrice": round(current_price, 2),
-                    "change": round(change, 2),
-                    "changePercent": round(change_pct, 2),
+                    "currentPrice": round(stats["currentPrice"], 2),
+                    "change": round(stats["change"], 2),
+                    "changePercent": round(stats["changePercent"], 2),
                     "priceType": "buffer"
                 }
 
@@ -611,16 +608,13 @@ async def get_market_index(index: str):
         }
 
 
-@app.get("/api/market-indexes")
-async def get_all_market_indexes():
-    """
-    Returns data for all market indexes (VIX, DJIA, S&P500, Russell 2000)
-    in a single request for efficiency.
-    """
-    indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
-    results = []
+TRACKED_INDEXES = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
 
-    for idx in indexes:
+
+async def fetch_tracked_indexes() -> List[Dict[str, Any]]:
+    """Fetch real-time data for all tracked market indices."""
+    results = []
+    for idx in TRACKED_INDEXES:
         try:
             data = await get_market_index(idx)
             results.append(data)
@@ -635,6 +629,16 @@ async def get_all_market_indexes():
                 "changePercent": 0.0,
                 "priceType": "error"
             })
+    return results
+
+
+@app.get("/api/market-indexes")
+async def get_all_market_indexes():
+    """
+    Returns data for all market indexes (VIX, DJIA, S&P500, Russell 2000)
+    in a single request for efficiency.
+    """
+    results = await fetch_tracked_indexes()
     return JSONResponse(results)
 
 
@@ -749,19 +753,7 @@ async def websocket_endpoint(websocket: WebSocket):
             decisions.append(r)
 
         # Get initial market indexes
-        market_indexes = []
-        try:
-            indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
-            for idx in indexes:
-                try:
-                    index_data = await get_market_index(idx)
-                    market_indexes.append(index_data)
-                except Exception:
-                    logger.debug(f"Failed to fetch market index {idx}")
-                    pass
-        except Exception:
-            logger.debug("Failed to fetch market indexes")
-            pass
+        market_indexes = await fetch_tracked_indexes()
 
         logger.info(f"Sending init message with {len(summaries)} symbols and {len(market_indexes)} market indexes")
         await websocket.send_json({

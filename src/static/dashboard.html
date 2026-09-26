@@ -862,16 +862,16 @@
                 };
                 const INDEX_TICKERS = {
                     'VIX': '^VIX',
-                    'DJIA': 'DIA',
-                    'SP500': 'SPY',
-                    'RUSSELL2000': 'IWM'
+                    'DJIA': '^DJI',
+                    'SP500': 'SPX',
+                    'RUSSELL2000': 'RUT'
                 };
 
                 const marketIndexesMap = reactive({
                     'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: 0, change: 0, changePercent: 0 },
-                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: 'DIA', currentPrice: 0, change: 0, changePercent: 0 },
-                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPY', currentPrice: 0, change: 0, changePercent: 0 },
-                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'IWM', currentPrice: 0, change: 0, changePercent: 0 }
+                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: '^DJI', currentPrice: 0, change: 0, changePercent: 0 },
+                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPX', currentPrice: 0, change: 0, changePercent: 0 },
+                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'RUT', currentPrice: 0, change: 0, changePercent: 0 }
                 });
 
                 const displayMarketIndexes = computed(() => {
