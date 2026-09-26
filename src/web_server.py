@@ -339,11 +339,17 @@ class ConnectionManager:
         self.active_connections: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, register: bool = True):
         await websocket.accept()
+        if register:
+            async with self._lock:
+                self.active_connections.add(websocket)
+            logger.info("WebSocket client connected. Active: %d", len(self.active_connections))
+
+    async def register(self, websocket: WebSocket):
         async with self._lock:
             self.active_connections.add(websocket)
-        logger.info("WebSocket client connected. Active: %d", len(self.active_connections))
+        logger.info("WebSocket client registered. Active: %d", len(self.active_connections))
 
     async def disconnect(self, websocket: WebSocket):
         async with self._lock:
@@ -495,6 +501,28 @@ async def get_symbols():
     return JSONResponse(results)
 
 
+INDEX_DISPLAY_NAMES = {
+    "VIX": "VIX",
+    "DJIA": "DJIA",
+    "SP500": "S&P 500",
+    "RUSSELL2000": "Russel 2k"
+}
+
+INDEX_TICKERS = {
+    "VIX": "^VIX",
+    "DJIA": "^DJI",
+    "SP500": "SPX",
+    "RUSSELL2000": "RUT"
+}
+
+INDEX_CANDIDATE_SYMBOLS = {
+    "VIX": ["VIX", "^VIX", "VXX", "UVXY"],
+    "DJIA": ["DJIA", "^DJI", "DJI", "DIA"],
+    "SP500": ["SP500", "SPX", "^GSPC", "^SPX", "SPY"],
+    "RUSSELL2000": ["RUSSELL2000", "RUT", "^RUT", "IWM", "RUSSELL2K", "RUSSELL"]
+}
+
+
 @app.get("/api/market-index/{index}")
 async def get_market_index(index: str):
     """
@@ -502,76 +530,68 @@ async def get_market_index(index: str):
     This data is not persisted but is fetched for real-time dashboard display.
     """
     index = index.upper()
-
-    # Map index symbols to standard ticker symbols used by external APIs
-    index_tickers = {
-        "VIX": "^VIX",  # CBOE Volatility Index
-        "DJIA": "^DJI", # Dow Jones Industrial Average
-        "SP500": "SPX", # S&P 500
-        "RUSSELL2000": "RUT" # Russell 2000
-    }
-
-    ticker = index_tickers.get(index, index)
-    if ticker.startswith("^"):
-        ticker = ticker[1:]
+    display_name = INDEX_DISPLAY_NAMES.get(index, index)
+    ticker = INDEX_TICKERS.get(index, index)
+    clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
+    candidates = INDEX_CANDIDATE_SYMBOLS.get(index, [index, clean_ticker])
 
     try:
-        # Use Alpaca API to get current data for the index
-        if _db_is_available:
-            from alpaca.data.timeframe import TimeFrame  # type: ignore[import-not-found]
+        # First priority: check live market_buffer for candidate symbols
+        for sym in candidates:
+            latest_tick = market_buffer.get_latest_tick(sym)
+            if latest_tick:
+                current_price = latest_tick.price
+                # Calculate daily gain/loss from open price or earliest tick
+                open_price = market_buffer._open_prices.get(sym)
+                if open_price is None or open_price <= 0:
+                    ticks = market_buffer.get_ticks(sym, limit=100)
+                    open_price = float(ticks[0].get("price", current_price)) if ticks else current_price
 
-            # Try to get recent data for the index
-            start_date = datetime.now() - timedelta(days=2)
-            alpaca_data = await _query_historical_ticks_safe(
-                db=get_db_manager(),
-                symbol=ticker,
-                start_time=start_date,
-                limit=2
-            )
-
-            if alpaca_data and len(alpaca_data) >= 2:
-                latest = alpaca_data[-1]
-                previous = alpaca_data[-2]
-
-                current_price = latest.get("price", 0)
-                previous_close = previous.get("price", current_price)
-
-                change = current_price - previous_close
-                change_pct = (change / previous_close * 100) if previous_close > 0 else 0
+                change = current_price - open_price
+                change_pct = (change / open_price * 100) if open_price > 0 else 0.0
 
                 return {
                     "index": index,
-                    "ticker": ticker,
+                    "displayName": display_name,
+                    "ticker": clean_ticker,
                     "currentPrice": round(current_price, 2),
                     "change": round(change, 2),
                     "changePercent": round(change_pct, 2),
-                    "priceType": "current"
+                    "priceType": "buffer"
                 }
 
-        # Fallback: return current live tick if available in buffer
-        latest_tick = market_buffer.get_latest_tick(index)
-        if latest_tick:
-            prev_price = latest_tick.price
-            change = 0.0
-            ticks = market_buffer.get_ticks(index, limit=2)
-            if len(ticks) >= 2:
-                prev_price = float(ticks[-2].get("price", latest_tick.price))
-                change = latest_tick.price - prev_price
-            change_pct = (change / prev_price * 100) if prev_price > 0 else 0
+        # Second priority: check database if available
+        if _db_is_available:
+            start_date = datetime.now() - timedelta(days=2)
+            alpaca_data = await _query_historical_ticks_safe(
+                db=get_db_manager(),
+                symbol=clean_ticker,
+                start_time=start_date,
+                limit=2
+            )
+            if alpaca_data and len(alpaca_data) >= 2:
+                latest = alpaca_data[-1]
+                previous = alpaca_data[-2]
+                current_price = float(latest.get("price", 0))
+                previous_close = float(previous.get("price", current_price))
+                change = current_price - previous_close
+                change_pct = (change / previous_close * 100) if previous_close > 0 else 0.0
 
-            return {
-                "index": index,
-                "ticker": ticker,
-                "currentPrice": round(latest_tick.price, 2),
-                "change": round(change, 2),
-                "changePercent": round(change_pct, 2),
-                "priceType": "fallback"
-            }
+                return {
+                    "index": index,
+                    "displayName": display_name,
+                    "ticker": clean_ticker,
+                    "currentPrice": round(current_price, 2),
+                    "change": round(change, 2),
+                    "changePercent": round(change_pct, 2),
+                    "priceType": "historical"
+                }
 
-        # If we have no data, return zeros
+        # Fallback if no data available yet
         return {
             "index": index,
-            "ticker": ticker,
+            "displayName": display_name,
+            "ticker": clean_ticker,
             "currentPrice": 0.0,
             "change": 0.0,
             "changePercent": 0.0,
@@ -582,7 +602,8 @@ async def get_market_index(index: str):
         logger.debug("Failed to fetch market index data for %s: %s", index, e)
         return {
             "index": index,
-            "ticker": ticker,
+            "displayName": display_name,
+            "ticker": clean_ticker,
             "currentPrice": 0.0,
             "change": 0.0,
             "changePercent": 0.0,
@@ -607,14 +628,14 @@ async def get_all_market_indexes():
             logger.debug("Failed to fetch index %s: %s", idx, e)
             results.append({
                 "index": idx,
+                "displayName": INDEX_DISPLAY_NAMES.get(idx, idx),
                 "ticker": "",
                 "currentPrice": 0.0,
                 "change": 0.0,
                 "changePercent": 0.0,
                 "priceType": "error"
             })
-
-    return results
+    return JSONResponse(results)
 
 
 @app.get("/api/symbols/{symbol}")
@@ -709,7 +730,7 @@ async def get_symbol_detail(
 @app.websocket("/ws/updates")
 async def websocket_endpoint(websocket: WebSocket):
     logger.info("WebSocket request received")
-    await manager.connect(websocket)
+    await manager.connect(websocket, register=False)
     try:
         logger.info("WebSocket connection accepted, preparing initial state")
         # Immediately send current state upon connection
@@ -752,6 +773,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "market_indexes": market_indexes,
             "marketIndexes": market_indexes
         })
+        await manager.register(websocket)
         logger.info("Init message sent successfully, entering receive loop")
 
         while True:

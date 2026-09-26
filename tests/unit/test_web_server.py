@@ -514,4 +514,75 @@ class TestLifespan:
             assert response["status"] == "ok"
 
 
+class TestMarketIndexTracking:
+    """Tests for the market index boxes tracking VIX, DJIA, S&P 500, and Russel 2k."""
+
+    @pytest.mark.asyncio
+    async def test_market_index_daily_gain_and_display_name(self):
+        from src.web_server import get_market_index, market_buffer
+
+        # Set up an initial/open tick and a higher current tick for S&P 500
+        market_buffer.add_tick("SP500", 5000.0, 100)
+        market_buffer._open_prices["SP500"] = 5000.0
+        market_buffer.add_tick("SP500", 5050.0, 150)
+
+        data = await get_market_index("SP500")
+        assert data["index"] == "SP500"
+        assert data["displayName"] == "S&P 500"
+        assert data["currentPrice"] == 5050.0
+        assert data["change"] == 50.0
+        assert data["changePercent"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_market_index_daily_loss(self):
+        from src.web_server import get_market_index, market_buffer
+
+        # Set up an index with negative change (loss)
+        market_buffer.add_tick("VIX", 20.0, 50)
+        market_buffer._open_prices["VIX"] = 20.0
+        market_buffer.add_tick("VIX", 18.5, 60)
+
+        data = await get_market_index("VIX")
+        assert data["index"] == "VIX"
+        assert data["displayName"] == "VIX"
+        assert data["currentPrice"] == 18.5
+        assert data["change"] == -1.5
+        assert data["changePercent"] == -7.5
+
+    @pytest.mark.asyncio
+    async def test_market_index_russell_display_name(self):
+        from src.web_server import get_market_index, market_buffer
+
+        market_buffer.add_tick("RUSSELL2000", 2200.0, 40)
+        market_buffer._open_prices["RUSSELL2000"] = 2200.0
+
+        data = await get_market_index("RUSSELL2000")
+        assert data["displayName"] == "Russel 2k"
+
+    @pytest.mark.asyncio
+    async def test_market_index_proxy_fallback(self):
+        from src.web_server import get_market_index, market_buffer
+
+        # If DJIA is not in buffer, it should check proxy DIA
+        market_buffer.add_tick("DIA", 390.0, 80)
+        market_buffer._open_prices["DIA"] = 390.0
+        market_buffer.add_tick("DIA", 395.0, 90)
+
+        data = await get_market_index("DJIA")
+        assert data["index"] == "DJIA"
+        assert data["currentPrice"] == 395.0
+        assert data["change"] == 5.0
+
+    def test_dashboard_html_contains_index_styling_and_top_layout(self, live_server):
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check red/green styling classes
+        assert ".market-index-card.up" in html
+        assert ".market-index-card.down" in html
+        # Check index display names
+        assert "Russel 2k" in html or "Russell 2k" in html
+        assert "S&P 500" in html
+
+
 # Add more tests as needed for additional edge cases and scenarios

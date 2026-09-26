@@ -259,88 +259,124 @@
             font-weight: 500;
         }
 
-        /* Market Index Boxes */
+        /* Market Index Boxes Across Top */
         .market-indexes-row {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(4, 1fr);
             gap: 16px;
-            margin-bottom: 28px;
+            margin-bottom: 24px;
+        }
+
+        @media (max-width: 1024px) {
+            .market-indexes-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 600px) {
+            .market-indexes-row {
+                grid-template-columns: 1fr;
+            }
         }
 
         .market-index-card {
             background-color: var(--bg-card);
             border: 1px solid var(--border-color);
             border-radius: 10px;
-            padding: 16px;
+            padding: 14px 18px;
             display: flex;
             flex-direction: column;
+            justify-content: space-between;
             transition: all 0.2s ease-in-out;
+            position: relative;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        /* If the index is up, make it green */
+        .market-index-card.up {
+            border-color: rgba(16, 185, 129, 0.6);
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, var(--bg-card) 65%);
+            box-shadow: 0 4px 16px rgba(16, 185, 129, 0.15);
+        }
+
+        /* If the index is down, make it red */
+        .market-index-card.down {
+            border-color: rgba(239, 68, 68, 0.6);
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, var(--bg-card) 65%);
+            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.15);
+        }
+
+        .market-index-card.neutral {
+            border-color: var(--border-color);
+            background-color: var(--bg-card);
         }
 
         .market-index-card:hover {
-            background-color: var(--bg-card-hover);
-            border-color: var(--color-accent);
             transform: translateY(-2px);
-            box-shadow: 0 8px 20px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        .market-index-card.up:hover {
+            border-color: var(--color-buy);
+            box-shadow: 0 8px 24px rgba(16, 185, 129, 0.25);
+        }
+
+        .market-index-card.down:hover {
+            border-color: var(--color-sell);
+            box-shadow: 0 8px 24px rgba(239, 68, 68, 0.25);
         }
 
         .index-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 12px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.01em;
+        }
+
+        .index-name {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-primary);
         }
 
         .index-ticker {
             color: var(--text-muted);
-            font-size: 0.75rem;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .index-main-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 8px;
         }
 
         .index-price {
-            font-size: 1.75rem;
+            font-size: 1.45rem;
             font-weight: 800;
             font-family: monospace;
-            margin-bottom: 4px;
+            letter-spacing: -0.02em;
         }
 
         .index-change {
-            font-size: 0.9rem;
-            font-weight: 600;
-            font-family: monospace;
-        }
-
-        .index-change.positive { color: var(--color-buy); }
-        .index-change.negative { color: var(--color-sell); }
-        .index-change.neutral { color: var(--text-secondary); }
-
-        .index-change-row {
             display: flex;
-            gap: 12px;
-            margin-bottom: 8px;
-        }
-
-        .index-stat {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .index-stat-label {
-            font-size: 0.7rem;
-            color: var(--text-muted);
-        }
-
-        .index-stat-value {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: var(--text-secondary);
+            align-items: center;
+            gap: 6px;
+            font-size: 0.82rem;
+            font-weight: 700;
             font-family: monospace;
+            white-space: nowrap;
         }
+
+        .index-change.positive, .index-price.positive { color: var(--color-buy); }
+        .index-change.negative, .index-price.negative { color: var(--color-sell); }
+        .index-change.neutral, .index-price.neutral { color: var(--text-secondary); }
 
         /* Drill-Down View */
         .drilldown-view {
@@ -622,41 +658,36 @@
         </header>
 
         <main>
+            <!-- Market Indexes Display Across Top -->
+            <div class="market-indexes-row">
+                <div 
+                    v-for="idx in displayMarketIndexes" 
+                    :key="idx.index" 
+                    class="market-index-card"
+                    :class="getIndexCardClass(idx)"
+                >
+                    <div class="index-header">
+                        <span class="index-name">{{ idx.displayName || idx.index }}</span>
+                        <span class="index-ticker">{{ idx.ticker }}</span>
+                    </div>
+                    <div class="index-main-row">
+                        <span class="index-price" :class="getChangeClass(idx.changePercent)">
+                            {{ idx.index === 'VIX' ? '' : '$' }}{{ formatPrice(idx.currentPrice) }}
+                        </span>
+                        <div class="index-change" :class="getChangeClass(idx.changePercent)">
+                            <span>{{ formatSignedChange(idx.change) }}</span>
+                            <span>({{ formatChange(idx.changePercent) }}%)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Summary Dashboard View -->
             <div v-if="!selectedSymbol">
                 <div class="summary-header">
                     <div>
                         <h2>Tracked Equity Portfolio</h2>
                         <p>Live stream of incoming ticks and Bellman real-time decisions. Click any symbol to view interactive chart.</p>
-                    </div>
-                </div>
-
-                <!-- Market Indexes Display -->
-                <div class="market-indexes-row">
-                    <div v-for="idx in marketIndexes" :key="idx.index" class="market-index-card">
-                        <div class="index-header">
-                            <span>{{ idx.index }}</span>
-                            <span class="index-ticker">{{ idx.ticker }}</span>
-                        </div>
-                        <div class="index-price">${{ formatPrice(idx.currentPrice) }}</div>
-                        <div class="index-change" :class="getChangeClass(idx.changePercent)">
-                            {{ formatChange(idx.changePercent) }}%
-                            <span v-if="idx.change !== 0" class="change-abs">
-                                ({{ idx.change > 0 ? '+' : '' }}${{ formatNumber(Math.abs(idx.change)) }})
-                            </span>
-                        </div>
-                        <div class="index-change-row">
-                            <div class="index-stat">
-                                <span class="index-stat-label">Price</span>
-                                <span class="index-stat-value">${{ formatPrice(idx.currentPrice) }}</span>
-                            </div>
-                            <div class="index-stat">
-                                <span class="index-stat-label">% Change</span>
-                                <span class="index-stat-value" :class="getChangeClass(idx.changePercent)">
-                                    {{ formatChange(idx.changePercent) }}%
-                                </span>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -821,7 +852,79 @@
                 const selectedDuration = ref('24h');
                 const show200DayMA = ref(false);
                 const show50DayMA = ref(false);
-                const marketIndexes = ref([]);
+
+                const INDEX_ORDER = ['VIX', 'DJIA', 'SP500', 'RUSSELL2000'];
+                const INDEX_DISPLAY_NAMES = {
+                    'VIX': 'VIX',
+                    'DJIA': 'DJIA',
+                    'SP500': 'S&P 500',
+                    'RUSSELL2000': 'Russel 2k'
+                };
+                const INDEX_TICKERS = {
+                    'VIX': '^VIX',
+                    'DJIA': 'DIA',
+                    'SP500': 'SPY',
+                    'RUSSELL2000': 'IWM'
+                };
+
+                const marketIndexesMap = reactive({
+                    'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: 0, change: 0, changePercent: 0 },
+                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: 'DIA', currentPrice: 0, change: 0, changePercent: 0 },
+                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPY', currentPrice: 0, change: 0, changePercent: 0 },
+                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'IWM', currentPrice: 0, change: 0, changePercent: 0 }
+                });
+
+                const displayMarketIndexes = computed(() => {
+                    return INDEX_ORDER.map(key => marketIndexesMap[key] || {
+                        index: key,
+                        displayName: INDEX_DISPLAY_NAMES[key] || key,
+                        ticker: INDEX_TICKERS[key] || key,
+                        currentPrice: 0,
+                        change: 0,
+                        changePercent: 0
+                    });
+                });
+                const marketIndexes = displayMarketIndexes;
+
+                function getIndexCardClass(idx) {
+                    const change = idx.changePercent !== undefined ? idx.changePercent : (idx.change || 0);
+                    if (change > 0) return 'up';
+                    if (change < 0) return 'down';
+                    return 'neutral';
+                }
+
+                function formatSignedChange(val) {
+                    if (val === undefined || val === null || isNaN(val)) return '0.00';
+                    const num = Number(val);
+                    const sign = num > 0 ? '+' : (num < 0 ? '-' : '');
+                    return sign + Math.abs(num).toFixed(2);
+                }
+
+                function updateMarketIndexes(indexes) {
+                    if (!Array.isArray(indexes)) return;
+                    indexes.forEach(item => {
+                        const key = (item.index || '').toUpperCase();
+                        if (marketIndexesMap[key]) {
+                            marketIndexesMap[key] = {
+                                ...marketIndexesMap[key],
+                                ...item,
+                                displayName: item.displayName || INDEX_DISPLAY_NAMES[key] || key
+                            };
+                        }
+                    });
+                }
+
+                async function fetchMarketIndexes() {
+                    try {
+                        const res = await fetch('/api/market-indexes');
+                        if (res.ok) {
+                            const data = await res.json();
+                            updateMarketIndexes(data);
+                        }
+                    } catch (e) {
+                        console.warn('Could not fetch market indexes:', e);
+                    }
+                }
 
                 let chartInstance = null;
                 let ws = null;
@@ -1057,7 +1160,7 @@
 
                     const indexes = data.marketIndexes || data.market_indexes;
                     if (indexes && Array.isArray(indexes)) {
-                        marketIndexes.value = indexes;
+                        updateMarketIndexes(indexes);
                     }
 
                     if (data.symbols && Array.isArray(data.symbols)) {
@@ -1422,6 +1525,7 @@
 
                 onMounted(() => {
                     connectWebSocket();
+                    fetchMarketIndexes();
 
                     // Handle popstate for browser back / forward navigation
                     window.addEventListener('popstate', (event) => {
@@ -1465,7 +1569,11 @@
                     formatPrice,
                     formatChange,
                     formatNumber,
-                    getChangeClass
+                    getChangeClass,
+                    displayMarketIndexes,
+                    marketIndexes,
+                    getIndexCardClass,
+                    formatSignedChange
                 };
             }
         }).mount('#app');
