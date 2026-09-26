@@ -585,4 +585,214 @@ class TestMarketIndexTracking:
         assert "S&P 500" in html
 
 
+class TestDashboardHTMLFeatures:
+    """Test that dashboard.html contains all required features from the ticket."""
+
+    def test_dashboard_has_real_time_streaming_badge(self, live_server):
+        """Verify real-time streaming badge with pulse animation is present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for live badge
+        assert "REALTIME STREAMING" in html
+        assert "DISCONNECTED - RECONNECTING..." in html
+        # Check for pulse animation
+        assert ".pulse-dot" in html
+        assert "animation: pulse" in html
+        # Check for connection state handling
+        assert "disconnected" in html
+        assert ":class=\"{ disconnected: !connected }\"" in html
+
+    def test_dashboard_has_decision_badges_and_styling(self, live_server):
+        """Verify decision badges (BUY, SELL, HOLD) with styling are present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for all decision badge classes
+        assert ".decision-badge.BUY" in html
+        assert ".decision-badge.SELL" in html
+        assert ".decision-badge.HOLD" in html
+        # Check for badge styling
+        assert "background-color: var(--color-buy-bg)" in html
+        assert "background-color: var(--color-sell-bg)" in html
+        assert "background-color: var(--color-hold-bg)" in html
+        # Check for badge usage in Vue template
+        assert ":class=\"item.recommendation\"" in html
+        assert "v-if=\"!selectedSymbol\"" in html or ":class=\"item.recommendation\"" in html
+
+    def test_dashboard_has_interactive_chart_with_chartjs(self, live_server):
+        """Verify interactive Chart.js canvas is present and configured."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for Chart.js library
+        assert "chart.js" in html or "Chart.js" in html
+        assert "https://cdn.jsdelivr.net/npm/chart.js" in html
+        # Check for canvas element
+        assert "id=\"tickChart\"" in html
+        # Check for chart-related CSS classes
+        assert ".canvas-wrap" in html
+        assert "height: 380px" in html
+        # Check for chart initialization in Vue
+        assert "initChart()" in html
+        assert "tickChart" in html
+
+    def test_dashboard_has_moving_average_checkboxes(self, live_server):
+        """Verify 200-Day and 50-Day moving average checkboxes are present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for checkboxes
+        assert '200-Day' in html
+        assert '50-Day' in html
+        # Check for checkbox styling
+        assert 'checkbox-label' in html
+        # Check for Vue binding
+        assert 'v-model="show200DayMA"' in html
+        assert 'v-model="show50DayMA"' in html
+        # Check for duration select
+        assert 'duration-select' in html
+        assert "v-model=\"selectedDuration\"" in html
+
+    def test_dashboard_has_market_indexes_row(self, live_server):
+        """Verify market indexes row with VIX, DJIA, S&P 500, and Russell 2k is present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for market indexes grid
+        assert ".market-indexes-row" in html
+        # Check for index card styling
+        assert ".market-index-card" in html
+        # Check for index display names in Vue template
+        assert 'index: \'VIX\'' in html
+        assert 'index: \'DJIA\'' in html
+        assert 'index: \'SP500\'' in html
+        assert 'index: \'RUSSELL2000\'' in html
+        # Check for up/down styling classes
+        assert ".market-index-card.up" in html
+        assert ".market-index-card.down" in html
+
+    def test_dashboard_has_decision_reasoning_and_history(self, live_server):
+        """Verify decision reasoning and history display sections are present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for decision box
+        assert ".decision-box" in html
+        # Check for reasoning list
+        assert "reasoning-list" in html
+        assert "reasoning" in html
+        # Check for history box
+        assert ".history-box" in html
+        # Check for history list
+        assert ".history-list" in html
+        # Check for reasoning items in Vue
+        assert 'v-if="activeDecision.reasoning && activeDecision.reasoning.length"' in html
+        assert "reasoning" in html
+
+    def test_dashboard_has_vue_3_application(self, live_server):
+        """Verify Vue 3 application is properly set up."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for Vue 3 library
+        assert "vue@3" in html or "vue.global.prod.js" in html
+        assert "https://unpkg.com/vue@3" in html
+        # Check for Vue app setup
+        assert "const { createApp" in html
+        # Check for reactivity features
+        assert "ref(" in html
+        assert "reactive(" in html
+        assert "computed(" in html
+
+    def test_dashboard_has_responsive_design(self, live_server):
+        """Verify responsive design classes for different screen sizes."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for media queries
+        assert "@media (max-width: 1024px)" in html
+        assert "@media (max-width: 600px)" in html
+        # Check for responsive grid layouts
+        assert "grid-template-columns: repeat(auto-fill" in html
+        # Check for responsive symbol cards
+        assert ".symbols-grid" in html
+        # Check for responsive market index cards
+        assert ".market-indexes-row" in html
+
+    def test_dashboard_has_symbol_summary_cards(self, live_server):
+        """Verify symbol summary cards with detailed information are present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for symbols grid
+        assert ".symbols-grid" in html
+        # Check for symbol card
+        assert ".symbol-card" in html
+        # Check for card styling
+        assert ".card-top" in html
+        assert ".card-price-row" in html
+        assert ".card-stats" in html
+        assert ".card-footer" in html
+        # Check for symbol display elements
+        assert ".symbol-name" in html
+        assert ".current-price" in html
+        assert ".change-pct" in html
+        # Check for stat items
+        assert ".stat-item" in html
+        assert ".stat-label" in html
+        assert ".stat-val" in html
+
+    def test_dashboard_has_drilldown_view(self, live_server):
+        """Verify drill-down symbol view is implemented."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for drill-down grid
+        assert ".drilldown-grid" in html
+        # Check for back button
+        assert ".back-btn" in html
+        # Check for chart controls
+        assert ".chart-controls" in html
+        # Check for info sidebar
+        assert ".info-sidebar" in html
+        # Check for Vue condition for drill-down view
+        assert "v-else" in html or "v-if=\"!selectedSymbol\"" in html
+
+    def test_dashboard_has_color_theme_variables(self, live_server):
+        """Verify CSS color theme variables are defined."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for CSS variables
+        assert "--bg-primary" in html
+        assert "--bg-secondary" in html
+        assert "--bg-card" in html
+        assert "--border-color" in html
+        assert "--text-primary" in html
+        assert "--color-buy" in html
+        assert "--color-sell" in html
+        assert "--color-hold" in html
+        assert "--color-accent" in html
+
+    def test_dashboard_has_all_required_chart_features(self, live_server):
+        """Verify all required chart features from the ticket are present."""
+        resp = requests.get(f"{BASE_URL}/")
+        assert resp.status_code == 200
+        html = resp.text
+        # Check for duration options
+        assert "1 Hour" in html
+        assert "24 Hours" in html
+        assert "5 Days" in html
+        assert "30 Days" in html
+        assert "1 Year" in html
+        assert "YTD" in html
+        # Check for moving average calculations
+        assert "calculateMA" in html
+        assert "calculateMovingAverages" in html
+        # Check for chart configuration
+        assert "onDurationChange" in html
+        assert "getDurationRange" in html
+
+
 # Add more tests as needed for additional edge cases and scenarios
