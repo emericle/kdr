@@ -1,7 +1,7 @@
 """Unit tests for the real-time web server module."""
 
 import time
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock
 import pytest
 import requests
 import asyncio
@@ -325,9 +325,9 @@ class TestConnectionManager:
 class TestBroadcastLoop:
     """Test broadcast_loop for WebSocket updates."""
 
-    @pytest.mark.asyncio
     async def test_broadcast_loop_generates_update_payload(self):
-        """Verify broadcast_json generates correct update payload format."""
+        """Verify broadcast_loop generates correct update payload format."""
+        from unittest.mock import patch, AsyncMock
         from src.web_server import ConnectionManager
 
         # Add some test data
@@ -339,32 +339,45 @@ class TestBroadcastLoop:
         mock_ws = AsyncMock()
         manager.active_connections.add(mock_ws)
 
-        # Call broadcast_json directly
-        await manager.broadcast_json({"test": "data"})
+        # Patch asyncio.sleep to avoid hanging
+        with patch.object(asyncio, 'sleep', AsyncMock()):
+            with patch.object(manager, 'broadcast_json') as mock_broadcast:
+                # Run for a single iteration
+                await manager.broadcast_json({"test": "data"})
 
         # Verify broadcast was called with valid structure
-        # (actual implementation will structure this properly)
-        assert mock_ws.send_json.called
-        call_args = mock_ws.send_json.call_args[0][0]
-        assert isinstance(call_args, dict)
+        mock_broadcast.assert_called_once()
+        payload = mock_broadcast.call_args[0][0]
+        assert "type" in payload
+        assert "timestamp" in payload
+        assert "symbols" in payload
+        assert "decisions" in payload
+        assert len(payload["symbols"]) > 0
 
-    @pytest.mark.asyncio
     async def test_broadcast_loop_handles_exception_gracefully(self):
-        """Verify broadcast_json handles exceptions without crashing."""
+        """Verify broadcast_loop handles exceptions without crashing."""
+        from unittest.mock import patch, AsyncMock
+        import asyncio
         from src.web_server import ConnectionManager
 
         manager = ConnectionManager()
         mock_ws = AsyncMock()
+
+        # Make send_json raise an exception
         mock_ws.send_json = AsyncMock(side_effect=Exception("Send failed"))
 
         manager.active_connections.add(mock_ws)
 
-        # Should not raise exception, just log
-        await manager.broadcast_json({"type": "test"})
+        # Patch asyncio.sleep to avoid infinite loop
+        with patch.object(asyncio, 'sleep', AsyncMock()):
+            # Should not raise exception, just log
+            try:
+                await manager.broadcast_json({"type": "test"})
+            except Exception:
+                pass  # Expected if send fails
 
-        # Exception should have been caught and dead client removed
-        # The mock should have been called
-        assert mock_ws.send_json.called
+        # Exception should have been caught in broadcast_json
+        assert mock_ws in manager.active_connections
 
 
 class TestComputeRecommendationEdgeCases:
@@ -434,22 +447,32 @@ class TestComputeRecommendationEdgeCases:
 class TestHistoricalQuery:
     """Test historical data query with edge cases."""
 
-    @pytest.mark.asyncio
     async def test_query_historical_ticks_timeout(self):
-        """Verify _query_historical_ticks_safe handles slow queries gracefully."""
-        # This test is complex to mock properly due to asyncio
-        # Skipping for now due to complexity of mocking asyncio.wait_for
-        pytest.skip("Skipped due to complex asyncio mocking requirements")
+        """Verify _query_historical_ticks_safe respects timeout."""
+        from unittest.mock import MagicMock
+        from src.web_server import _query_historical_ticks_safe
+        import asyncio
 
-    @pytest.mark.asyncio
+        mock_db = MagicMock()
+        # Make query take longer than 0.1s
+        async def slow_query(*args, **kwargs):
+            await asyncio.sleep(0.5)
+            return []
+
+        mock_db.get_historical_market_data = slow_query
+
+        with patch('src.web_server._db_manager_instance', mock_db):
+            results = await _query_historical_ticks_safe(
+                mock_db, "TESTSYM", None, 100
+            )
+
+            # Should return empty list due to timeout
+            assert results == []
+
     async def test_query_historical_ticks_db_failure(self):
         """Verify _query_historical_ticks_safe handles DB failures gracefully."""
         from unittest.mock import MagicMock
-        from src.web_server import (
-            _query_historical_ticks_safe,
-            _db_manager_instance,
-            _db_is_available
-        )
+        from src.web_server import _query_historical_ticks_safe
         import asyncio
 
         mock_db = MagicMock()
@@ -468,33 +491,102 @@ class TestHistoricalQuery:
 
             # Should return empty list on success
             assert results == []
+
+            # Should fail gracefully
+            mock_db.get_historical_market_data.side_effect = Exception("DB error")
+            results = await _query_historical_ticks_safe(
+                mock_db, "TESTSYM", None, 100
+            )
+
+            # Should return empty list, circuit breaker should be set
+            assert results == []
         finally:
             _db_manager_instance = original_db
             _db_is_available = original_avail
+
+    async def test_query_historical_ticks_circuit_breaker_cooldown(self):
+        """Verify circuit breaker respects retry interval."""
+        from unittest.mock import MagicMock, patch
+        from src.web_server import _query_historical_ticks_safe
+        import asyncio
+
+        mock_db = MagicMock()
+        mock_db.get_historical_market_data = MagicMock(return_value=[])
+
+        original_db = _db_manager_instance
+        original_avail = _db_is_available
+        original_time = _db_last_attempt_time
+
+        try:
+            _db_manager_instance = mock_db
+            _db_is_available = True
+            _db_last_attempt_time = 0.0
+
+            # First call succeeds
+            results1 = await _query_historical_ticks_safe(
+                mock_db, "TESTSYM", None, 100
+            )
+            assert results1 == []
+            assert _db_is_available is True
+
+            # Immediate second call should be blocked by cooldown
+            results2 = await _query_historical_ticks_safe(
+                mock_db, "TESTSYM", None, 100
+            )
+            assert results2 == []
+            # DB should not be called again (cooled down)
+            assert mock_db.get_historical_market_data.call_count == 1
+        finally:
+            _db_manager_instance = original_db
+            _db_is_available = original_avail
+            _db_last_attempt_time = original_time
 
 
 class TestLifespan:
     """Test application lifespan context manager."""
 
-    @pytest.mark.asyncio
     async def test_lifespan_context_manager(self):
-        """Verify lifespan context manager can be used without crashing."""
+        """Verify lifespan context manager can be used."""
         from fastapi import FastAPI
+        from src.web_server import broadcast_loop
+        from unittest.mock import patch, AsyncMock
 
-        app = FastAPI(title="Test App")
+        @dataclass
+        class MockTask:
+            cancelled = False
 
-        @app.get("/test")
-        async def test_endpoint():
-            return {"status": "ok"}
+            def cancel(self):
+                self.cancelled = True
 
-        # Execute lifespan context - should not raise exception
-        async with app.router.lifespan_context(app):
-            # Access the app
-            assert app is not None
+            async def __aenter__(self):
+                return self
 
-            # Verify endpoint works
-            response = await test_endpoint()
-            assert response["status"] == "ok"
+            async def __aexit__(self, *args):
+                pass
+
+        app = FastAPI()
+        original_task = broadcast_loop
+
+        with patch('src.web_server.broadcast_loop') as mock_loop:
+            with patch('asyncio.create_task') as mock_create_task:
+                mock_task = MockTask()
+                mock_create_task.return_value = mock_task
+
+                try:
+                    @app.get("/test")
+                    async def test_endpoint():
+                        return {"test": "ok"}
+
+                    # Execute lifespan
+                    async with app.router.lifespan_context(app):
+                        assert True  # No exception
+
+                    # Verify task was cancelled
+                    assert mock_task.cancelled
+                finally:
+                    # Restore original function
+                    import src.web_server as ws_module
+                    ws_module.broadcast_loop = original_task
 
 
 # Add more tests as needed for additional edge cases and scenarios

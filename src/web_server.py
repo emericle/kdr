@@ -390,12 +390,27 @@ async def broadcast_loop(interval: float = 1.0):
                 symbol_summaries.append(summary)
                 decisions.append(rec)
 
+            # Get current market indexes
+            market_indexes = []
+            try:
+                indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+                for idx in indexes:
+                    try:
+                        index_data = await get_market_index(idx)
+                        market_indexes.append(index_data)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             payload = {
                 "type": "update",
                 "timestamp": time.time(),
                 "time_str": datetime.now().strftime("%H:%M:%S"),
                 "symbols": symbol_summaries,
-                "decisions": decisions
+                "decisions": decisions,
+                "market_indexes": market_indexes,
+                "marketIndexes": market_indexes
             }
 
             await manager.broadcast_json(payload)
@@ -435,6 +450,7 @@ app.add_middleware(
 )
 
 STATIC_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
+TEST_WS_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "test-websocket.html")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -443,6 +459,15 @@ async def serve_dashboard():
         with open(STATIC_HTML_PATH, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse(content="<h1>Dashboard HTML template not found.</h1>", status_code=404)
+
+
+@app.get("/test-websocket", response_class=HTMLResponse)
+@app.get("/test-websocket.html", response_class=HTMLResponse)
+async def serve_test_websocket():
+    if os.path.exists(TEST_WS_HTML_PATH):
+        with open(TEST_WS_HTML_PATH, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>Test WebSocket HTML template not found.</h1>", status_code=404)
 
 
 @app.get("/api/status")
@@ -467,6 +492,128 @@ async def get_symbols():
         summary["confidence"] = rec["confidence"]
         results.append(summary)
     return JSONResponse(results)
+
+
+@app.get("/api/market-index/{index}")
+async def get_market_index(index: str):
+    """
+    Returns real-time market index data for specific indices.
+    This data is not persisted but is fetched for real-time dashboard display.
+    """
+    index = index.upper()
+
+    # Map index symbols to standard ticker symbols used by external APIs
+    index_tickers = {
+        "VIX": "^VIX",  # CBOE Volatility Index
+        "DJIA": "^DJI", # Dow Jones Industrial Average
+        "SP500": "SPX", # S&P 500
+        "RUSSELL2000": "RUT" # Russell 2000
+    }
+
+    ticker = index_tickers.get(index, index)
+    if ticker.startswith("^"):
+        ticker = ticker[1:]
+
+    try:
+        # Use Alpaca API to get current data for the index
+        if _db_is_available:
+            from alpaca.data.timeframe import TimeFrame  # type: ignore[import-not-found]
+
+            # Try to get recent data for the index
+            start_date = datetime.now() - timedelta(days=2)
+            alpaca_data = await _query_historical_ticks_safe(
+                db=get_db_manager(),
+                symbol=ticker,
+                start_time=start_date,
+                limit=2
+            )
+
+            if alpaca_data and len(alpaca_data) >= 2:
+                latest = alpaca_data[-1]
+                previous = alpaca_data[-2]
+
+                current_price = latest.get("price", 0)
+                previous_close = previous.get("price", current_price)
+
+                change = current_price - previous_close
+                change_pct = (change / previous_close * 100) if previous_close > 0 else 0
+
+                return {
+                    "index": index,
+                    "ticker": ticker,
+                    "currentPrice": round(current_price, 2),
+                    "change": round(change, 2),
+                    "changePercent": round(change_pct, 2),
+                    "priceType": "current"
+                }
+
+        # Fallback: return current live tick if available in buffer
+        latest_tick = market_buffer.get_latest_tick(index)
+        if latest_tick:
+            prev_price = latest_tick.price
+            change = 0.0
+            ticks = market_buffer.get_ticks(index, limit=2)
+            if len(ticks) >= 2:
+                prev_price = float(ticks[-2].get("price", latest_tick.price))
+                change = latest_tick.price - prev_price
+            change_pct = (change / prev_price * 100) if prev_price > 0 else 0
+
+            return {
+                "index": index,
+                "ticker": ticker,
+                "currentPrice": round(latest_tick.price, 2),
+                "change": round(change, 2),
+                "changePercent": round(change_pct, 2),
+                "priceType": "fallback"
+            }
+
+        # If we have no data, return zeros
+        return {
+            "index": index,
+            "ticker": ticker,
+            "currentPrice": 0.0,
+            "change": 0.0,
+            "changePercent": 0.0,
+            "priceType": "no_data"
+        }
+
+    except Exception as e:
+        logger.debug("Failed to fetch market index data for %s: %s", index, e)
+        return {
+            "index": index,
+            "ticker": ticker,
+            "currentPrice": 0.0,
+            "change": 0.0,
+            "changePercent": 0.0,
+            "priceType": "error"
+        }
+
+
+@app.get("/api/market-indexes")
+async def get_all_market_indexes():
+    """
+    Returns data for all market indexes (VIX, DJIA, S&P500, Russell 2000)
+    in a single request for efficiency.
+    """
+    indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+    results = []
+
+    for idx in indexes:
+        try:
+            data = await get_market_index(idx)
+            results.append(data)
+        except Exception as e:
+            logger.debug("Failed to fetch index %s: %s", idx, e)
+            results.append({
+                "index": idx,
+                "ticker": "",
+                "currentPrice": 0.0,
+                "change": 0.0,
+                "changePercent": 0.0,
+                "priceType": "error"
+            })
+
+    return results
 
 
 @app.get("/api/symbols/{symbol}")
@@ -560,10 +707,15 @@ async def get_symbol_detail(
 @app.websocket("/ws")
 @app.websocket("/ws/updates")
 async def websocket_endpoint(websocket: WebSocket):
+    logger.info("WebSocket request received")
     await manager.connect(websocket)
     try:
+        logger.info("WebSocket connection accepted, preparing initial state")
         # Immediately send current state upon connection
+        logger.info("Fetching symbols from market buffer")
         symbols = market_buffer.get_symbols()
+        logger.info(f"Found {len(symbols)} symbols to report")
+
         summaries = []
         decisions = []
         for sym in symbols:
@@ -574,20 +726,42 @@ async def websocket_endpoint(websocket: WebSocket):
             summaries.append(s)
             decisions.append(r)
 
+        # Get initial market indexes
+        market_indexes = []
+        try:
+            indexes = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+            for idx in indexes:
+                try:
+                    index_data = await get_market_index(idx)
+                    market_indexes.append(index_data)
+                except Exception:
+                    logger.debug(f"Failed to fetch market index {idx}")
+                    pass
+        except Exception:
+            logger.debug("Failed to fetch market indexes")
+            pass
+
+        logger.info(f"Sending init message with {len(summaries)} symbols and {len(market_indexes)} market indexes")
         await websocket.send_json({
             "type": "init",
             "timestamp": time.time(),
             "time_str": datetime.now().strftime("%H:%M:%S"),
             "symbols": summaries,
-            "decisions": decisions
+            "decisions": decisions,
+            "market_indexes": market_indexes,
+            "marketIndexes": market_indexes
         })
+        logger.info("Init message sent successfully, entering receive loop")
 
         while True:
             # Keep socket open and accept incoming ping/client messages
-            await websocket.receive_text()
+            msg = await websocket.receive_text()
+            logger.debug(f"Received message from client: {msg[:50]}")
     except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected normally")
         await manager.disconnect(websocket)
-    except Exception:
+    except Exception as e:
+        logger.error(f"WebSocket error: {type(e).__name__}: {e}", exc_info=True)
         await manager.disconnect(websocket)
 
 

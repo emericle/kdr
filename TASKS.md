@@ -1,0 +1,2 @@
+- [] 1. There are errors in the log: "2026-09-25 12:09:39,383 - DataIngestion - WARNING - Error normalizing payload: type object 'datetime.datetime' has no attribute 'datetime'"  Fix those, add the commit and create the PR.
+- [x] 2. It's not clear if it's is related to the issue in Task #1, but the stream of data on the page says ""Waiting for market stream" and there are no further updates.  Make certain that the UI is using the correct end points and that the data is flowing properly.  This means run all tests before committing and creating the PR.
