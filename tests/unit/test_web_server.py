@@ -49,6 +49,23 @@ def test_dashboard_html_endpoint(live_server):
     assert "KDR Real-Time Market & Decision Monitor" in response.text
 
 
+def test_dashboard_symbol_route(live_server):
+    response = requests.get(f"{BASE_URL}/symbol/AAPL")
+    assert response.status_code == 200
+    assert "KDR Real-Time Market & Decision Monitor" in response.text
+
+
+def test_dashboard_history_navigation_support(live_server):
+    response = requests.get(f"{BASE_URL}/")
+    assert response.status_code == 200
+    content = response.text
+    # Verify browser back/forward history management is implemented
+    assert "popstate" in content
+    assert "history.pushState" in content
+    assert "history.replaceState" in content
+
+
+
 def test_api_status_endpoint(live_server):
     response = requests.get(f"{BASE_URL}/api/status")
     assert response.status_code == 200

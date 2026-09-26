@@ -710,7 +710,7 @@
 
             <!-- Drill-Down Symbol View -->
             <div v-else class="drilldown-view">
-                <button class="back-btn" @click="clearSelection">
+                <button class="back-btn" @click="goBack">
                     ← Back to Portfolio Summary
                 </button>
 
@@ -825,6 +825,20 @@
 
                 let chartInstance = null;
                 let ws = null;
+                let hasInternalHistory = false;
+
+                function getTargetSymbolFromLocation() {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const querySymbol = urlParams.get('symbol');
+                    let pathSymbol = null;
+                    if (window.location.pathname.startsWith('/symbol/')) {
+                        const parts = window.location.pathname.split('/');
+                        if (parts[2]) {
+                            pathSymbol = decodeURIComponent(parts[2]);
+                        }
+                    }
+                    return querySymbol || pathSymbol;
+                }
 
                 const symbols = computed(() => {
                     return Object.values(symbolsMap).sort((a, b) => a.symbol.localeCompare(b.symbol));
@@ -1114,8 +1128,19 @@
                     }
                 }
 
-                async function selectSymbol(symbol) {
+                async function selectSymbol(symbol, pushHistory = true) {
+                    if (!symbol) return;
                     selectedSymbol.value = symbol;
+
+                    if (pushHistory) {
+                        hasInternalHistory = true;
+                        const targetUrl = window.location.pathname.startsWith('/symbol/')
+                            ? `/symbol/${encodeURIComponent(symbol)}`
+                            : `${window.location.pathname}?symbol=${encodeURIComponent(symbol)}`;
+                        window.history.pushState({ symbol: symbol }, '', targetUrl);
+                    }
+                    document.title = `${symbol} - KDR Real-Time Monitor`;
+
                     // Seed initial tick if none exists yet but summary has a live price
                     if (!tickHistoryMap[symbol] || tickHistoryMap[symbol].length === 0) {
                         const symData = symbolsMap[symbol];
@@ -1146,12 +1171,25 @@
                     }
                 }
 
-                function clearSelection() {
+                function goBack() {
+                    if (hasInternalHistory) {
+                        window.history.back();
+                    } else {
+                        clearSelection(true);
+                    }
+                }
+
+                function clearSelection(updateHistory = true) {
                     if (chartInstance) {
                         chartInstance.destroy();
                         chartInstance = null;
                     }
                     selectedSymbol.value = null;
+                    document.title = 'KDR Real-Time Market & Decision Monitor';
+                    if (updateHistory) {
+                        const cleanUrl = window.location.pathname.startsWith('/symbol/') ? '/' : window.location.pathname;
+                        window.history.pushState({ symbol: null }, '', cleanUrl);
+                    }
                 }
 
                 function getFilteredHistory(hist) {
@@ -1384,6 +1422,28 @@
 
                 onMounted(() => {
                     connectWebSocket();
+
+                    // Handle popstate for browser back / forward navigation
+                    window.addEventListener('popstate', (event) => {
+                        const stateSymbol = event.state && event.state.symbol ? event.state.symbol : null;
+                        const locationSymbol = getTargetSymbolFromLocation();
+                        const target = stateSymbol || locationSymbol;
+
+                        if (target) {
+                            selectSymbol(target, false);
+                        } else {
+                            clearSelection(false);
+                        }
+                    });
+
+                    // Check initial URL parameters/path
+                    const initialSymbol = getTargetSymbolFromLocation();
+                    if (initialSymbol) {
+                        window.history.replaceState({ symbol: initialSymbol }, '', window.location.href);
+                        selectSymbol(initialSymbol, false);
+                    } else {
+                        window.history.replaceState({ symbol: null }, '', window.location.href);
+                    }
                 });
 
                 return {
@@ -1401,6 +1461,7 @@
                     symbolDecisions,
                     selectSymbol,
                     clearSelection,
+                    goBack,
                     formatPrice,
                     formatChange,
                     formatNumber,

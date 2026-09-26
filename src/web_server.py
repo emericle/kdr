@@ -454,7 +454,8 @@ TEST_WS_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "test-webs
 
 
 @app.get("/", response_class=HTMLResponse)
-async def serve_dashboard():
+@app.get("/symbol/{symbol}", response_class=HTMLResponse)
+async def serve_dashboard(symbol: Optional[str] = None):
     if os.path.exists(STATIC_HTML_PATH):
         with open(STATIC_HTML_PATH, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
