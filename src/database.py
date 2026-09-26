@@ -188,6 +188,71 @@ class DatabaseManager:
         finally:
             self.connection.close(session)
 
+    def get_price_at_timestamp(self, symbol: str, target_timestamp: datetime) -> Optional[float]:
+        """Retrieves the price at a specific timestamp for interval calculation."""
+        session = self.connection.get_session()
+        if not session:
+            return None
+        try:
+            query = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper(),
+                MarketDataModel.timestamp == target_timestamp
+            ).first()
+            if query:
+                return float(query.close if query.close is not None else query.open or 0.0)
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving price at timestamp for {symbol}: {e}")
+            return None
+        finally:
+            self.connection.close(session)
+
+    def get_price_at_interval_start(self, symbol: str, duration: str) -> Optional[float]:
+        """Retrieves the price at the start of a time interval for percentage calculation.
+
+        Args:
+            symbol: The stock/crypto symbol
+            duration: Time interval (1h, 24h, 5d, 30d, 1y, ytd)
+        Returns:
+            Price at the start of the interval, or None if not found
+        """
+        now = datetime.now()
+        target_time = None
+
+        if duration == "1h":
+            target_time = now - timedelta(hours=1)
+        elif duration == "24h":
+            target_time = now - timedelta(hours=24)
+        elif duration == "5d":
+            target_time = now - timedelta(days=5)
+        elif duration == "30d":
+            target_time = now - timedelta(days=30)
+        elif duration == "1y":
+            target_time = now - timedelta(days=365)
+        elif duration == "ytd":
+            target_time = datetime(now.year, 1, 1)
+
+        if target_time is None:
+            return None
+
+        session = self.connection.get_session()
+        if not session:
+            return None
+        try:
+            query = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper(),
+                MarketDataModel.timestamp >= target_time
+            ).order_by(MarketDataModel.timestamp.asc()).first()
+
+            if query:
+                return float(query.open if query.open is not None else query.close or 0.0)
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving price at interval start for {symbol} duration={duration}: {e}")
+            return None
+        finally:
+            self.connection.close(session)
+
     def get_model_weights(self, symbol: str):
         """Retrieves model weights for a specific symbol."""
         session = self.connection.get_session()

@@ -124,7 +124,56 @@ class MarketDataBuffer:
             items = list(history)[-limit:]
             return [t.to_dict() for t in items]
 
-    def get_summary(self, symbol: str) -> Dict[str, Any]:
+    def get_price_and_change(self, symbol: str, duration: str = "24h") -> Optional[Dict[str, float]]:
+        """Thread-safe retrieval of current price, daily change, and percent change based on interval.
+
+        Args:
+            symbol: Stock/crypto symbol
+            duration: Time interval for price change calculation (1h, 24h, 5d, 30d, 1y, ytd)
+        Returns:
+            Dict with currentPrice, change, and changePercent, or None if no history
+        """
+        symbol = symbol.upper()
+        with self._lock:
+            history = self._history.get(symbol)
+            if not history:
+                return None
+
+            current_price = history[-1].price
+            db = get_db_manager()
+
+            if db and hasattr(db, 'get_price_at_interval_start'):
+                try:
+                    interval_start_price = db.get_price_at_interval_start(symbol, duration)
+                    if interval_start_price is not None and interval_start_price > 0:
+                        change = current_price - interval_start_price
+                        change_pct = (change / interval_start_price * 100.0)
+                        return {
+                            "currentPrice": current_price,
+                            "change": change,
+                            "changePercent": change_pct
+                        }
+                except Exception as e:
+                    logger.debug(f"Database interval price lookup failed, falling back to buffer: {e}")
+
+            fallback_open_price = self._open_prices.get(symbol, history[0].price)
+            change = current_price - fallback_open_price
+            change_pct = (change / fallback_open_price * 100.0) if fallback_open_price > 0 else 0.0
+            return {
+                "currentPrice": current_price,
+                "change": change,
+                "changePercent": change_pct
+            }
+
+    def get_summary(self, symbol: str, duration: str = "24h") -> Dict[str, Any]:
+        """Thread-safe summary calculation including price change based on interval.
+
+        Args:
+            symbol: Stock/crypto symbol
+            duration: Time interval for price change calculation
+        Returns:
+            Dict with symbol, currentPrice, changePercent, high, low, volume, lastUpdate
+        """
         symbol = symbol.upper()
         with self._lock:
             history = self._history.get(symbol, deque())
@@ -140,8 +189,23 @@ class MarketDataBuffer:
                 }
 
             current = history[-1].price
-            initial = self._open_prices.get(symbol, history[0].price)
-            change_pct = ((current - initial) / initial * 100.0) if initial > 0 else 0.0
+            db = get_db_manager()
+
+            if db and hasattr(db, 'get_price_at_interval_start'):
+                try:
+                    interval_start_price = db.get_price_at_interval_start(symbol, duration)
+                    if interval_start_price is not None and interval_start_price > 0:
+                        change_pct = ((current - interval_start_price) / interval_start_price * 100.0)
+                    else:
+                        change_pct = 0.0
+                except Exception as e:
+                    logger.debug(f"Database interval price lookup failed, falling back to buffer: {e}")
+                    initial = self._open_prices.get(symbol, history[0].price)
+                    change_pct = ((current - initial) / initial * 100.0) if initial > 0 else 0.0
+            else:
+                initial = self._open_prices.get(symbol, history[0].price)
+                change_pct = ((current - initial) / initial * 100.0) if initial > 0 else 0.0
+
             prices = [t.price for t in history]
             total_vol = sum(t.size for t in history)
 
@@ -153,23 +217,6 @@ class MarketDataBuffer:
                 "low": round(min(prices), 2),
                 "volume": round(total_vol, 2),
                 "lastUpdate": datetime.fromtimestamp(history[-1].timestamp).strftime("%H:%M:%S")
-            }
-
-    def get_price_and_change(self, symbol: str) -> Optional[Dict[str, float]]:
-        """Thread-safe retrieval of current price, daily change, and percent change."""
-        symbol = symbol.upper()
-        with self._lock:
-            history = self._history.get(symbol)
-            if not history:
-                return None
-            current_price = history[-1].price
-            open_price = self._open_prices.get(symbol, history[0].price)
-            change = current_price - open_price
-            change_pct = (change / open_price * 100.0) if open_price > 0 else 0.0
-            return {
-                "currentPrice": current_price,
-                "change": change,
-                "changePercent": change_pct
             }
 
 
@@ -649,7 +696,7 @@ async def get_symbol_detail(
     limit: Optional[int] = 1000
 ):
     symbol = symbol.upper()
-    summary = market_buffer.get_summary(symbol)
+    summary = market_buffer.get_summary(symbol, duration=duration or "24h")
 
     # Determine start_time based on requested duration window
     now = datetime.now()
