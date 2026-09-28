@@ -198,13 +198,27 @@
         .card-price-row {
             display: flex;
             align-items: baseline;
-            gap: 12px;
+            margin-bottom: 4px;
+        }
+
+        .card-change-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
             margin-bottom: 16px;
         }
 
         .current-price {
             font-size: 2rem;
             font-weight: 800;
+            font-family: monospace;
+            letter-spacing: -0.02em;
+        }
+
+        .card-change-row .price-change,
+        .card-change-row .change-pct {
+            font-size: 0.95rem;
+            font-weight: 600;
             font-family: monospace;
         }
 
@@ -384,9 +398,14 @@
 
         .index-main-row {
             display: flex;
-            justify-content: space-between;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 2px;
+        }
+
+        .index-price-row {
+            display: flex;
             align-items: baseline;
-            gap: 8px;
         }
 
         .index-price {
@@ -399,8 +418,8 @@
         .index-change {
             display: flex;
             align-items: center;
-            gap: 6px;
-            font-size: 0.82rem;
+            gap: 8px;
+            font-size: 0.85rem;
             font-weight: 700;
             font-family: monospace;
             white-space: nowrap;
@@ -474,9 +493,20 @@
 
         .chart-price-large {
             display: flex;
-            align-items: baseline;
-            gap: 12px;
+            flex-direction: column;
+            gap: 4px;
             margin-top: 4px;
+        }
+
+        .chart-price-row {
+            display: flex;
+            align-items: baseline;
+        }
+
+        .chart-change-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .canvas-wrap {
@@ -776,9 +806,11 @@
                         <span class="index-ticker">{{ idx.ticker }}</span>
                     </div>
                     <div class="index-main-row">
-                        <span class="index-price">
-                            {{ idx.index === 'VIX' ? '' : '$' }}{{ formatPrice(idx.currentPrice) }}
-                        </span>
+                        <div class="index-price-row">
+                            <span class="index-price">
+                                {{ idx.index === 'VIX' ? '' : '$' }}{{ formatPrice(idx.currentPrice) }}
+                            </span>
+                        </div>
                         <div class="index-change" :class="getChangeClass(idx.changePercent)">
                             <span class="price-change">{{ formatSignedDelta(idx.change, idx.index === 'VIX' ? '' : '$') }}</span>
                             <span class="change-pct">{{ formatSignedPercent(idx.changePercent) }}</span>
@@ -815,6 +847,8 @@
                         </div>
                         <div class="card-price-row">
                             <span class="current-price">${{ formatPrice(item.currentPrice) }}</span>
+                        </div>
+                        <div class="card-change-row">
                             <span class="price-change" :class="getChangeClass(getSymbolDurationChangePct(item))">
                                 {{ formatSignedDelta(getSymbolDurationChange(item)) }}
                             </span>
@@ -863,13 +897,17 @@
                             <div class="chart-title-group">
                                 <h3>{{ activeSymbolData.symbol }} Real-Time Ticks</h3>
                                 <div class="chart-price-large">
-                                    <span class="current-price">${{ formatPrice(activeSymbolData.currentPrice) }}</span>
-                                    <span class="price-change" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
-                                        {{ formatSignedDelta(getSymbolDurationChange(activeSymbolData)) }}
-                                    </span>
-                                    <span class="change-pct" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
-                                        {{ formatSignedPercent(getSymbolDurationChangePct(activeSymbolData)) }}
-                                    </span>
+                                    <div class="chart-price-row">
+                                        <span class="current-price">${{ formatPrice(activeSymbolData.currentPrice) }}</span>
+                                    </div>
+                                    <div class="chart-change-row">
+                                        <span class="price-change" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
+                                            {{ formatSignedDelta(getSymbolDurationChange(activeSymbolData)) }}
+                                        </span>
+                                        <span class="change-pct" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
+                                            {{ formatSignedPercent(getSymbolDurationChangePct(activeSymbolData)) }}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                             <span class="decision-badge" :class="activeSymbolData.recommendation" style="font-size: 1rem; padding: 8px 16px;">
