@@ -1,5 +1,6 @@
 """Unit tests for the real-time web server module."""
 
+import os
 import time
 from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
@@ -583,6 +584,55 @@ class TestMarketIndexTracking:
         # Check index display names
         assert "Russel 2k" in html or "Russell 2k" in html
         assert "S&P 500" in html
+
+    def test_index_store_persistence_to_disk(self, tmp_path):
+        """Verify that IndexStore persists valuations to disk and reloads them."""
+        from src.web_server import IndexStore
+        cache_file = str(tmp_path / "test_index_cache.json")
+        store = IndexStore(cache_file=cache_file)
+        store.update_index("SP500", current_price=5123.45, change=25.0, change_percent=0.49, last_update="14:30:00")
+
+        assert os.path.exists(cache_file)
+
+        # Reload with a new instance from the saved file
+        store2 = IndexStore(cache_file=cache_file)
+        sp = store2.get_index("SP500")
+        assert sp["currentPrice"] == 5123.45
+        assert sp["change"] == 25.0
+        assert sp["changePercent"] == 0.49
+        assert sp["lastUpdate"] == "14:30:00"
+
+    @pytest.mark.asyncio
+    async def test_get_market_index_no_historical_db_lookup(self):
+        """Verify that get_market_index and get_all_market_indexes do not perform historical DB lookups."""
+        from src.web_server import get_market_index, get_all_market_indexes
+        with patch("src.web_server.get_db_manager") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.return_value = mock_db
+
+            data = await get_market_index("SP500")
+            assert isinstance(data, dict)
+            assert data["index"] == "SP500"
+            assert data["currentPrice"] > 0
+
+            all_data = await get_all_market_indexes()
+            assert isinstance(all_data, list)
+            assert len(all_data) == 5
+
+            # Historical database queries should never be called for index summaries
+            mock_db.get_price_at_interval_start.assert_not_called()
+            mock_db.get_historical_market_data.assert_not_called()
+            mock_db.get_latest_market_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_index_valuations_never_zero_when_closed(self):
+        """Verify that all tracked indexes have non-zero valuations even if markets closed/no ticks."""
+        from src.web_server import get_all_market_indexes, TRACKED_INDEXES
+        indexes = await get_all_market_indexes()
+        assert len(indexes) == len(TRACKED_INDEXES)
+        for idx in indexes:
+            assert idx["currentPrice"] > 0, f"Index {idx['index']} has 0 price"
+            assert idx["lastUpdate"] is not None
 
 
 class TestDashboardHTMLFeatures:

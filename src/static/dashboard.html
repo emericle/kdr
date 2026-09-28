@@ -262,7 +262,7 @@
         /* Market Index Boxes Across Top */
         .market-indexes-row {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 16px;
             margin-bottom: 24px;
         }
@@ -277,6 +277,38 @@
             .market-indexes-row {
                 grid-template-columns: 1fr;
             }
+        }
+
+        .index-footer {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .index-last-update {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            font-family: monospace;
+        }
+
+        .price-change {
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-family: monospace;
+        }
+
+        .price-change.up {
+            color: var(--color-buy);
+        }
+
+        .price-change.down {
+            color: var(--color-sell);
+        }
+
+        .price-change.neutral {
+            color: var(--text-muted);
         }
 
         .market-index-card {
@@ -744,13 +776,16 @@
                         <span class="index-ticker">{{ idx.ticker }}</span>
                     </div>
                     <div class="index-main-row">
-                        <span class="index-price" :class="getChangeClass(idx.changePercent)">
+                        <span class="index-price">
                             {{ idx.index === 'VIX' ? '' : '$' }}{{ formatPrice(idx.currentPrice) }}
                         </span>
                         <div class="index-change" :class="getChangeClass(idx.changePercent)">
-                            <span>{{ formatSignedChange(idx.change) }}</span>
-                            <span>({{ formatChange(idx.changePercent) }}%)</span>
+                            <span class="price-change">{{ formatSignedDelta(idx.change, idx.index === 'VIX' ? '' : '$') }}</span>
+                            <span class="change-pct">{{ formatSignedPercent(idx.changePercent) }}</span>
                         </div>
+                    </div>
+                    <div class="index-footer" v-if="idx.lastUpdate">
+                        <span class="index-last-update">Last update: {{ idx.lastUpdate }}</span>
                     </div>
                 </div>
             </div>
@@ -780,8 +815,11 @@
                         </div>
                         <div class="card-price-row">
                             <span class="current-price">${{ formatPrice(item.currentPrice) }}</span>
-                            <span class="change-pct" :class="getChangeClass(item['changePercent' + selectedDuration.value])">
-                                {{ formatChange(item['changePercent' + selectedDuration.value]) }}%
+                            <span class="price-change" :class="getChangeClass(getSymbolDurationChangePct(item))">
+                                {{ formatSignedDelta(getSymbolDurationChange(item)) }}
+                            </span>
+                            <span class="change-pct" :class="getChangeClass(getSymbolDurationChangePct(item))">
+                                {{ formatSignedPercent(getSymbolDurationChangePct(item)) }}
                             </span>
                         </div>
                         <div class="card-stats">
@@ -826,8 +864,11 @@
                                 <h3>{{ activeSymbolData.symbol }} Real-Time Ticks</h3>
                                 <div class="chart-price-large">
                                     <span class="current-price">${{ formatPrice(activeSymbolData.currentPrice) }}</span>
-                                    <span class="change-pct" :class="getChangeClass(activeSymbolData['changePercent' + selectedDuration.value])">
-                                        {{ formatChange(activeSymbolData['changePercent' + selectedDuration.value]) }}%
+                                    <span class="price-change" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
+                                        {{ formatSignedDelta(getSymbolDurationChange(activeSymbolData)) }}
+                                    </span>
+                                    <span class="change-pct" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
+                                        {{ formatSignedPercent(getSymbolDurationChangePct(activeSymbolData)) }}
                                     </span>
                                 </div>
                             </div>
@@ -946,25 +987,28 @@
                     { value: 'ytd', label: 'YTD' }
                 ];
 
-                const INDEX_ORDER = ['VIX', 'DJIA', 'SP500', 'RUSSELL2000'];
+                const INDEX_ORDER = ['VIX', 'DJIA', 'SP500', 'NASDAQ', 'RUSSELL2000'];
                 const INDEX_DISPLAY_NAMES = {
                     'VIX': 'VIX',
                     'DJIA': 'DJIA',
                     'SP500': 'S&P 500',
+                    'NASDAQ': 'NASDAQ',
                     'RUSSELL2000': 'Russel 2k'
                 };
                 const INDEX_TICKERS = {
                     'VIX': '^VIX',
                     'DJIA': '^DJI',
                     'SP500': 'SPX',
+                    'NASDAQ': '^IXIC',
                     'RUSSELL2000': 'RUT'
                 };
 
                 const marketIndexesMap = reactive({
-                    'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: 0, change: 0, changePercent: 0 },
-                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: '^DJI', currentPrice: 0, change: 0, changePercent: 0 },
-                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPX', currentPrice: 0, change: 0, changePercent: 0 },
-                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'RUT', currentPrice: 0, change: 0, changePercent: 0 }
+                    'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: 15.25, change: -0.45, changePercent: -2.87, lastUpdate: '16:00:00' },
+                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: '^DJI', currentPrice: 43910.50, change: 145.20, changePercent: 0.33, lastUpdate: '16:00:00' },
+                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPX', currentPrice: 5865.75, change: 22.40, changePercent: 0.38, lastUpdate: '16:00:00' },
+                    'NASDAQ': { index: 'NASDAQ', displayName: 'NASDAQ', ticker: '^IXIC', currentPrice: 18518.60, change: 115.30, changePercent: 0.63, lastUpdate: '16:00:00' },
+                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'RUT', currentPrice: 2240.10, change: 12.80, changePercent: 0.57, lastUpdate: '16:00:00' }
                 });
 
                 const displayMarketIndexes = computed(() => {
@@ -974,7 +1018,8 @@
                         ticker: INDEX_TICKERS[key] || key,
                         currentPrice: 0,
                         change: 0,
-                        changePercent: 0
+                        changePercent: 0,
+                        lastUpdate: null
                     });
                 });
                 const marketIndexes = displayMarketIndexes;
@@ -991,6 +1036,38 @@
                     const num = Number(val);
                     const sign = num > 0 ? '+' : (num < 0 ? '-' : '');
                     return sign + Math.abs(num).toFixed(2);
+                }
+
+                function formatSignedDelta(val, currency = '$') {
+                    if (val === undefined || val === null || isNaN(val)) return `+${currency}0.00`;
+                    const num = Number(val);
+                    const sign = num < 0 ? '-' : '+';
+                    return `${sign}${currency}${Math.abs(num).toFixed(2)}`;
+                }
+
+                function formatSignedPercent(val) {
+                    if (val === undefined || val === null || isNaN(val)) return '0.00%';
+                    const num = Number(val);
+                    const sign = num > 0 ? '+' : (num < 0 ? '-' : '');
+                    return `${sign}${Math.abs(num).toFixed(2)}%`;
+                }
+
+                function getSymbolDurationChange(item) {
+                    if (!item) return 0.0;
+                    const durKey = 'change' + selectedDuration.value;
+                    if (item[durKey] !== undefined && item[durKey] !== null) {
+                        return item[durKey];
+                    }
+                    return item.change !== undefined ? item.change : 0.0;
+                }
+
+                function getSymbolDurationChangePct(item) {
+                    if (!item) return 0.0;
+                    const durKey = 'changePercent' + selectedDuration.value;
+                    if (item[durKey] !== undefined && item[durKey] !== null) {
+                        return item[durKey];
+                    }
+                    return item.changePercent !== undefined ? item.changePercent : 0.0;
                 }
 
                 function updateMarketIndexes(indexes) {
@@ -1639,6 +1716,12 @@
                     connectWebSocket();
                     fetchMarketIndexes();
 
+                    // Periodic refresh ensures top index boxes keep updating even if WebSocket is buffering or reconnecting
+                    const indexInterval = setInterval(fetchMarketIndexes, 3000);
+                    window.addEventListener('beforeunload', () => {
+                        clearInterval(indexInterval);
+                    });
+
                     // Handle popstate for browser back / forward navigation
                     window.addEventListener('popstate', (event) => {
                         const stateSymbol = event.state && event.state.symbol ? event.state.symbol : null;
@@ -1706,7 +1789,11 @@
                     displayMarketIndexes,
                     marketIndexes,
                     getIndexCardClass,
-                    formatSignedChange
+                    formatSignedChange,
+                    formatSignedDelta,
+                    formatSignedPercent,
+                    getSymbolDurationChange,
+                    getSymbolDurationChangePct
                 };
             }
         }).mount('#app');
