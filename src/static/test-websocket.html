@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KDR WebSocket Diagnostic Test</title>
+    <style>
+        :root {
+            --bg-primary: #0b0f19;
+            --bg-secondary: #131b2e;
+            --bg-card: #19233c;
+            --bg-card-hover: #223052;
+            --border-color: #2a3b61;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --color-buy: #10b981;
+            --color-sell: #ef4444;
+            --color-accent: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        header {
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 28px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-title h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .test-controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        button {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background-color: var(--bg-card);
+            color: var(--text-primary);
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        button:hover {
+            background-color: var(--bg-card-hover);
+            border-color: var(--color-accent);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.test-ws {
+            border-color: var(--color-buy);
+            background-color: rgba(16, 185, 129, 0.1);
+            color: var(--color-buy);
+        }
+
+        button.test-wss {
+            border-color: #3b82f6;
+            background-color: rgba(59, 130, 246, 0.1);
+            color: var(--color-accent);
+        }
+
+        button.stop {
+            border-color: var(--color-sell);
+            background-color: rgba(239, 68, 68, 0.1);
+            color: var(--color-sell);
+        }
+
+        main {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 900px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .panel-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-badge.connected {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--color-buy);
+        }
+
+        .status-badge.disconnected {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--color-sell);
+        }
+
+        .status-badge.connecting {
+            background-color: rgba(245, 158, 11, 0.2);
+            color: var(--color-hold);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .connection-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .stat-item {
+            background-color: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            font-family: monospace;
+            color: var(--text-secondary);
+        }
+
+        .log-container {
+            flex-grow: 1;
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            overflow-y: auto;
+            max-height: 500px;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            background-color: rgba(255, 255, 255, 0.03);
+            font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+            font-size: 0.8rem;
+        }
+
+        .log-time {
+            color: var(--text-muted);
+            margin-right: 8px;
+            font-size: 0.75rem;
+        }
+
+        .log-entry.open .log-time { color: #10b981; }
+        .log-entry.message .log-time { color: #3b82f6; }
+        .log-entry.close .log-time { color: #f59e0b; }
+        .log-entry.error .log-time { color: #ef4444; }
+
+        .diagnostic-results {
+            margin-top: 16px;
+            padding: 16px;
+            background-color: rgba(59, 130, 246, 0.05);
+            border: 1px solid var(--color-accent);
+            border-radius: 8px;
+        }
+
+        .diagnostic-title {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--color-accent);
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .diagnostic-result {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 0.85rem;
+        }
+
+        .diagnostic-result:last-child {
+            border-bottom: none;
+        }
+
+        .diagnostic-label {
+            color: var(--text-secondary);
+        }
+
+        .diagnostic-value {
+            font-family: monospace;
+            color: var(--text-primary);
+        }
+
+        .diagnostic-value.fail { color: var(--color-sell); }
+        .diagnostic-value.pass { color: var(--color-buy); }
+
+        .timestamp {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .timestamp strong {
+            color: var(--text-primary);
+        }
+
+        .protocol-switch {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+        }
+
+        input[type="radio"] {
+            accent-color: var(--color-accent);
+            cursor: pointer;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 300px;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-title">
+            <h1>WebSocket Diagnostic Test</h1>
+        </div>
+        <div class="test-controls">
+            <button id="btnConnect" class="test-ws">Connect ws://</button>
+            <button id="btnConnectWss" class="test-wss">Connect wss://</button>
+            <button id="btnStop" class="stop" disabled>Stop Test</button>
+        </div>
+    </header>
+
+    <main>
+        <!-- Connection Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Connection Monitor</span>
+                <span id="connectionStatus" class="status-badge disconnected">DISCONNECTED</span>
+            </div>
+
+            <div class="connection-stats">
+                <div class="stat-item">
+                    <div class="stat-label">Connection Status</div>
+                    <div class="stat-value" id="statusValue">Ready</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Connection Duration</div>
+                    <div class="stat-value" id="durationValue">0 ms</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Messages Received</div>
+                    <div class="stat-value" id="messageCount">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Average Latency</div>
+                    <div class="stat-value" id="latencyValue">-- ms</div>
+                </div>
+            </div>
+
+            <div class="diagnostic-results">
+                <div class="diagnostic-title">Connection Diagnostics</div>
+                <div class="diagnostic-result">
+                    <span class="diagnostic-label">Protocol</span>
+                    <span class="diagnostic-value" id="diagnosticProtocol">--</span>
+                </div>
+                <div class="diagnostic-result">
+                    <span class="diagnostic-label">URL</span>
+                    <span class="diagnostic-value" id="diagnosticUrl" style="max-width: 300px; text-align: right;">--</span>
+                </div>
+                <div class="diagnostic-result">
+                    <span class="diagnostic-label">Connection Start</span>
+                    <span class="diagnostic-value" id="diagnosticStartTime">--</span>
+                </div>
+                <div class="diagnostic-result">
+                    <span class="diagnostic-label">Disconnect Reason</span>
+                    <span class="diagnostic-value" id="diagnosticCloseCode">--</span>
+                </div>
+                <div class="diagnostic-result">
+                    <span class="diagnostic-label">Time to Disconnect</span>
+                    <span class="diagnostic-value" id="diagnosticDisconnectTime">--</span>
+                </div>
+                <div class="diagnostic-result">
+                    <span class="diagnostic-label">Test Result</span>
+                    <span class="diagnostic-value" id="diagnosticResult">--</span>
+                </div>
+            </div>
+
+            <div class="log-container" id="connectionLog">
+                <div class="log-entry">
+                    <span class="log-time">[READY]</span>
+                    Configure protocol and click Connect to begin diagnostic test.
+                </div>
+            </div>
+        </div>
+
+        <!-- Message Monitor Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Message Monitor</span>
+                <div class="timestamp">
+                    <span>Last Message:</span>
+                    <strong id="lastMessageTime">--:--:--</strong>
+                </div>
+            </div>
+
+            <div class="chart-container" id="messageChartContainer">
+                <canvas id="messageChart"></canvas>
+            </div>
+
+            <div style="margin-top: 16px;">
+                <div class="stat-label" style="margin-bottom: 8px;">Message Log</div>
+                <div class="log-container" id="messageLog" style="max-height: 300px;">
+                    <div class="log-entry">
+                        <span class="log-time">[READY]</span>
+                        Waiting for messages...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // WebSocket instance
+        let ws = null;
+        let testActive = false;
+        let messageCount = 0;
+        let firstMessageTime = null;
+        let lastMessageTime = null;
+        let messageTimes = [];
+        let connectionStartTime = null;
+        let disconnectReason = '';
+        let disconnectCode = null;
+
+        // Chart.js
+        let chart = null;
+
+        // DOM Elements
+        const connectionStatus = document.getElementById('connectionStatus');
+        const statusValue = document.getElementById('statusValue');
+        const durationValue = document.getElementById('durationValue');
+        const messageCountValue = document.getElementById('messageCount');
+        const latencyValue = document.getElementById('latencyValue');
+        const connectionLog = document.getElementById('connectionLog');
+        const messageLog = document.getElementById('messageLog');
+        const lastMessageTimeDisplay = document.getElementById('lastMessageTime');
+        const diagnosticProtocol = document.getElementById('diagnosticProtocol');
+        const diagnosticUrl = document.getElementById('diagnosticUrl');
+        const diagnosticStartTime = document.getElementById('diagnosticStartTime');
+        const diagnosticCloseCode = document.getElementById('diagnosticCloseCode');
+        const diagnosticDisconnectTime = document.getElementById('diagnosticDisconnectTime');
+        const diagnosticResult = document.getElementById('diagnosticResult');
+
+        // Format time
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        }
+
+        // Format timestamp
+        function formatFullTimestamp(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            }) + '.' + String(date.getMilliseconds()).padStart(3, '0');
+        }
+
+        // Add log entry
+        function addLog(container, type, message, data = null) {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type.toLowerCase()}`;
+            const timestamp = formatFullTimestamp(Date.now());
+            let logMessage = `<span class="log-time">[${timestamp}]</span> ${message}`;
+            if (data !== null) {
+                try {
+                    const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+                    logMessage += `\n<pre style="margin-top: 4px; white-space: pre-wrap; overflow-x: auto;">${escapeHtml(dataStr)}</pre>`;
+                } catch (e) {
+                    logMessage += `\n<pre style="margin-top: 4px;">${escapeHtml(String(data))}</pre>`;
+                }
+            }
+            entry.innerHTML = logMessage;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            if (typeof text !== 'string') return text;
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Update connection stats
+        function updateConnectionStats() {
+            if (!connectionStartTime) return;
+
+            const duration = Date.now() - connectionStartTime;
+            durationValue.textContent = `${duration} ms`;
+
+            if (firstMessageTime) {
+                const firstLatency = firstMessageTime - connectionStartTime;
+                latencyValue.textContent = `${firstLatency} ms`;
+            }
+
+            if (messageCount > 0) {
+                const avgLatency = messageTimes.reduce((sum, time) => sum + (time - connectionStartTime), 0) / messageTimes.length;
+                latencyValue.textContent = `${Math.round(avgLatency)} ms avg`;
+            }
+        }
+
+        // Add message to log
+        function addMessageLog(message) {
+            messageCount++;
+            messageCountValue.textContent = messageCount;
+
+            const timestamp = firstMessageTime || Date.now();
+            const lat = messageTimes.length > 0 ? messageTimes[messageTimes.length - 1] - messageTimes[0] : timestamp - connectionStartTime;
+
+            lastMessageTimeDisplay.textContent = formatTime(Date.now());
+            addLog(messageLog, 'message', 'Received message', message);
+            updateConnectionStats();
+        }
+
+        // Initialize chart
+        function initChart() {
+            const ctx = document.getElementById('messageChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Latency (ms)',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.1,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            labels: {
+                                color: '#94a3b8'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: false
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)'
+                            },
+                            ticks: {
+                                color: '#64748b'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update chart
+        function updateChart(timestamp, latency) {
+            if (!chart || !testActive) return;
+
+            chart.data.labels.push(formatTime(timestamp));
+            chart.data.datasets[0].data.push(latency);
+
+            // Keep only last 20 points
+            if (chart.data.labels.length > 20) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+
+            chart.update('none');
+        }
+
+        // Update connection status badge
+        function updateStatusBadge(status, className) {
+            connectionStatus.textContent = status.toUpperCase();
+            connectionStatus.className = `status-badge ${className}`;
+            statusValue.textContent = status;
+        }
+
+        // Connect WebSocket
+        function connectWebSocket(protocol, url) {
+            // Clean up existing connection
+            if (ws) {
+                ws.close();
+            }
+
+            const host = window.location.host || 'localhost:8001';
+            const path = url.startsWith('/') ? url : `/${url}`;
+            const wsUrl = `${protocol}://${host}${path}`;
+
+            addLog(connectionLog, 'info', `Attempting to connect to ${wsUrl}...`);
+            updateStatusBadge('Connecting', 'connecting');
+
+            ws = new WebSocket(wsUrl);
+            connectionStartTime = Date.now();
+            testActive = true;
+            messageCount = 0;
+            messageTimes = [];
+
+            ws.onopen = () => {
+                const duration = Date.now() - connectionStartTime;
+                updateStatusBadge('Connected', 'connected');
+                addLog(connectionLog, 'open', `Connection established! Duration: ${duration}ms`);
+                addLog(connectionLog, 'info', 'WebSocket ready - waiting for messages...');
+
+                // Update diagnostics
+                diagnosticProtocol.textContent = protocol === 'wss' ? 'wss:' : 'ws:';
+                diagnosticUrl.textContent = wsUrl;
+                diagnosticStartTime.textContent = formatFullTimestamp(connectionStartTime);
+                diagnosticCloseCode.textContent = '--';
+                diagnosticResult.textContent = 'In Progress';
+                diagnosticResult.className = 'diagnostic-value';
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    messageCount++;
+                    firstMessageTime = firstMessageTime || Date.now();
+                    messageTimes.push(Date.now());
+
+                    addMessageLog(message);
+
+                    // Update chart
+                    updateChart(Date.now(), Date.now() - firstMessageTime);
+                } catch (e) {
+                    addLog(connectionLog, 'error', 'Failed to parse message:', event.data);
+                }
+            };
+
+            ws.onclose = (event) => {
+                disconnectReason = event.reason || 'Connection closed';
+                disconnectCode = event.code;
+                const duration = Date.now() - connectionStartTime;
+
+                updateStatusBadge('Disconnected', 'disconnected');
+                addLog(connectionLog, 'close', `Connection closed after ${duration}ms`);
+                addLog(connectionLog, 'error', `Close code: ${event.code}, Reason: ${event.reason}`);
+
+                // Update diagnostics
+                diagnosticCloseCode.textContent = event.code;
+                diagnosticDisconnectTime.textContent = `${duration}ms`;
+
+                // Determine result
+                if (event.code === 1000 && duration > 1000) {
+                    diagnosticResult.textContent = 'PASSED';
+                    diagnosticResult.className = 'diagnostic-value pass';
+                    addLog(connectionLog, 'open', `✓ Connection maintained for ${duration}ms - TEST PASSED`);
+                } else if (duration < 500) {
+                    diagnosticResult.textContent = 'FAILED';
+                    diagnosticResult.className = 'diagnostic-value fail';
+                    addLog(connectionLog, 'error', `✗ Connection disconnected in ${duration}ms - TEST FAILED`);
+                } else {
+                    diagnosticResult.textContent = 'WARNING';
+                    diagnosticResult.className = 'diagnostic-value';
+                    addLog(connectionLog, 'error', `⚠ Unexpected disconnect in ${duration}ms`);
+                }
+
+                testActive = false;
+            };
+
+            ws.onerror = (error) => {
+                const duration = Date.now() - connectionStartTime;
+                updateStatusBadge('Error', 'disconnected');
+                addLog(connectionLog, 'error', `Connection error after ${duration}ms:`, error);
+                testActive = false;
+            };
+        }
+
+        // Stop test
+        function stopTest() {
+            if (ws) {
+                const duration = Date.now() - connectionStartTime;
+                addLog(connectionLog, 'info', `Stopping test... Duration: ${duration}ms`);
+                ws.close(1000, 'Test stopped by user');
+            }
+            testActive = false;
+        }
+
+        // Event Listeners
+        document.getElementById('btnConnect').addEventListener('click', () => {
+            connectWebSocket('ws', '/ws');
+        });
+
+        document.getElementById('btnConnectWss').addEventListener('click', () => {
+            connectWebSocket('wss', '/ws');
+        });
+
+        document.getElementById('btnStop').addEventListener('click', stopTest);
+
+        // Auto-reconnect logic (like the dashboard)
+        function setupAutoReconnect() {
+            if (ws && testActive && ws.readyState === WebSocket.CLOSED) {
+                addLog(connectionLog, 'info', 'Attempting reconnection in 2 seconds...');
+                setTimeout(() => {
+                    if (testActive && (!ws || ws.readyState === WebSocket.CLOSED)) {
+                        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                        connectWebSocket(protocol, '/ws');
+                    }
+                }, 2000);
+            }
+        }
+
+        // Initialize chart on load
+        window.addEventListener('load', initChart);
+
+        // Periodically update duration display
+        setInterval(() => {
+            if (testActive && connectionStartTime) {
+                updateConnectionStats();
+            }
+        }, 100);
+    </script>
+</body>
+</html>

@@ -124,7 +124,56 @@ class MarketDataBuffer:
             items = list(history)[-limit:]
             return [t.to_dict() for t in items]
 
-    def get_summary(self, symbol: str) -> Dict[str, Any]:
+    def get_price_and_change(self, symbol: str, duration: str = "24h") -> Optional[Dict[str, float]]:
+        """Thread-safe retrieval of current price, daily change, and percent change based on interval.
+
+        Args:
+            symbol: Stock/crypto symbol
+            duration: Time interval for price change calculation (1h, 24h, 5d, 30d, 1y, ytd)
+        Returns:
+            Dict with currentPrice, change, and changePercent, or None if no history
+        """
+        symbol = symbol.upper()
+        with self._lock:
+            history = self._history.get(symbol)
+            if not history:
+                return None
+
+            current_price = history[-1].price
+            db = get_db_manager()
+
+            if db and hasattr(db, 'get_price_at_interval_start'):
+                try:
+                    interval_start_price = db.get_price_at_interval_start(symbol, duration)
+                    if interval_start_price is not None and interval_start_price > 0:
+                        change = current_price - interval_start_price
+                        change_pct = (change / interval_start_price * 100.0)
+                        return {
+                            "currentPrice": current_price,
+                            "change": change,
+                            "changePercent": change_pct
+                        }
+                except Exception as e:
+                    logger.debug(f"Database interval price lookup failed, falling back to buffer: {e}")
+
+            fallback_open_price = self._open_prices.get(symbol, history[0].price)
+            change = current_price - fallback_open_price
+            change_pct = (change / fallback_open_price * 100.0) if fallback_open_price > 0 else 0.0
+            return {
+                "currentPrice": current_price,
+                "change": change,
+                "changePercent": change_pct
+            }
+
+    def get_summary(self, symbol: str, duration: str = "24h") -> Dict[str, Any]:
+        """Thread-safe summary calculation including price change based on interval.
+
+        Args:
+            symbol: Stock/crypto symbol
+            duration: Time interval for price change calculation
+        Returns:
+            Dict with symbol, currentPrice, changePercent, high, low, volume, lastUpdate
+        """
         symbol = symbol.upper()
         with self._lock:
             history = self._history.get(symbol, deque())
@@ -140,8 +189,23 @@ class MarketDataBuffer:
                 }
 
             current = history[-1].price
-            initial = self._open_prices.get(symbol, history[0].price)
-            change_pct = ((current - initial) / initial * 100.0) if initial > 0 else 0.0
+            db = get_db_manager()
+
+            if db and hasattr(db, 'get_price_at_interval_start'):
+                try:
+                    interval_start_price = db.get_price_at_interval_start(symbol, duration)
+                    if interval_start_price is not None and interval_start_price > 0:
+                        change_pct = ((current - interval_start_price) / interval_start_price * 100.0)
+                    else:
+                        change_pct = 0.0
+                except Exception as e:
+                    logger.debug(f"Database interval price lookup failed, falling back to buffer: {e}")
+                    initial = self._open_prices.get(symbol, history[0].price)
+                    change_pct = ((current - initial) / initial * 100.0) if initial > 0 else 0.0
+            else:
+                initial = self._open_prices.get(symbol, history[0].price)
+                change_pct = ((current - initial) / initial * 100.0) if initial > 0 else 0.0
+
             prices = [t.price for t in history]
             total_vol = sum(t.size for t in history)
 
@@ -339,11 +403,17 @@ class ConnectionManager:
         self.active_connections: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, register: bool = True):
         await websocket.accept()
+        if register:
+            async with self._lock:
+                self.active_connections.add(websocket)
+            logger.info("WebSocket client connected. Active: %d", len(self.active_connections))
+
+    async def register(self, websocket: WebSocket):
         async with self._lock:
             self.active_connections.add(websocket)
-        logger.info("WebSocket client connected. Active: %d", len(self.active_connections))
+        logger.info("WebSocket client registered. Active: %d", len(self.active_connections))
 
     async def disconnect(self, websocket: WebSocket):
         async with self._lock:
@@ -390,12 +460,17 @@ async def broadcast_loop(interval: float = 1.0):
                 symbol_summaries.append(summary)
                 decisions.append(rec)
 
+            # Get current market indexes
+            market_indexes = await fetch_tracked_indexes()
+
             payload = {
                 "type": "update",
                 "timestamp": time.time(),
                 "time_str": datetime.now().strftime("%H:%M:%S"),
                 "symbols": symbol_summaries,
-                "decisions": decisions
+                "decisions": decisions,
+                "market_indexes": market_indexes,
+                "marketIndexes": market_indexes
             }
 
             await manager.broadcast_json(payload)
@@ -435,14 +510,25 @@ app.add_middleware(
 )
 
 STATIC_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
+TEST_WS_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "test-websocket.html")
 
 
 @app.get("/", response_class=HTMLResponse)
-async def serve_dashboard():
+@app.get("/symbol/{symbol}", response_class=HTMLResponse)
+async def serve_dashboard(symbol: Optional[str] = None):
     if os.path.exists(STATIC_HTML_PATH):
         with open(STATIC_HTML_PATH, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse(content="<h1>Dashboard HTML template not found.</h1>", status_code=404)
+
+
+@app.get("/test-websocket", response_class=HTMLResponse)
+@app.get("/test-websocket.html", response_class=HTMLResponse)
+async def serve_test_websocket():
+    if os.path.exists(TEST_WS_HTML_PATH):
+        with open(TEST_WS_HTML_PATH, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>Test WebSocket HTML template not found.</h1>", status_code=404)
 
 
 @app.get("/api/status")
@@ -469,6 +555,140 @@ async def get_symbols():
     return JSONResponse(results)
 
 
+INDEX_DISPLAY_NAMES = {
+    "VIX": "VIX",
+    "DJIA": "DJIA",
+    "SP500": "S&P 500",
+    "RUSSELL2000": "Russel 2k"
+}
+
+INDEX_TICKERS = {
+    "VIX": "^VIX",
+    "DJIA": "^DJI",
+    "SP500": "SPX",
+    "RUSSELL2000": "RUT"
+}
+
+INDEX_CANDIDATE_SYMBOLS = {
+    "VIX": ["VIX", "^VIX", "VXX", "UVXY"],
+    "DJIA": ["DJIA", "^DJI", "DJI", "DIA"],
+    "SP500": ["SP500", "SPX", "^GSPC", "^SPX", "SPY"],
+    "RUSSELL2000": ["RUSSELL2000", "RUT", "^RUT", "IWM", "RUSSELL2K", "RUSSELL"]
+}
+
+
+@app.get("/api/market-index/{index}")
+async def get_market_index(index: str):
+    """
+    Returns real-time market index data for specific indices.
+    This data is not persisted but is fetched for real-time dashboard display.
+    """
+    index = index.upper()
+    display_name = INDEX_DISPLAY_NAMES.get(index, index)
+    ticker = INDEX_TICKERS.get(index, index)
+    clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
+    candidates = INDEX_CANDIDATE_SYMBOLS.get(index, [index, clean_ticker])
+
+    try:
+        # First priority: check live market_buffer for candidate symbols
+        for sym in candidates:
+            stats = market_buffer.get_price_and_change(sym)
+            if stats:
+                return {
+                    "index": index,
+                    "displayName": display_name,
+                    "ticker": clean_ticker,
+                    "currentPrice": round(stats["currentPrice"], 2),
+                    "change": round(stats["change"], 2),
+                    "changePercent": round(stats["changePercent"], 2),
+                    "priceType": "buffer"
+                }
+
+        # Second priority: check database if available
+        if _db_is_available:
+            start_date = datetime.now() - timedelta(days=2)
+            alpaca_data = await _query_historical_ticks_safe(
+                db=get_db_manager(),
+                symbol=clean_ticker,
+                start_time=start_date,
+                limit=2
+            )
+            if alpaca_data and len(alpaca_data) >= 2:
+                latest = alpaca_data[-1]
+                previous = alpaca_data[-2]
+                current_price = float(latest.get("price", 0))
+                previous_close = float(previous.get("price", current_price))
+                change = current_price - previous_close
+                change_pct = (change / previous_close * 100) if previous_close > 0 else 0.0
+
+                return {
+                    "index": index,
+                    "displayName": display_name,
+                    "ticker": clean_ticker,
+                    "currentPrice": round(current_price, 2),
+                    "change": round(change, 2),
+                    "changePercent": round(change_pct, 2),
+                    "priceType": "historical"
+                }
+
+        # Fallback if no data available yet
+        return {
+            "index": index,
+            "displayName": display_name,
+            "ticker": clean_ticker,
+            "currentPrice": 0.0,
+            "change": 0.0,
+            "changePercent": 0.0,
+            "priceType": "no_data"
+        }
+
+    except Exception as e:
+        logger.debug("Failed to fetch market index data for %s: %s", index, e)
+        return {
+            "index": index,
+            "displayName": display_name,
+            "ticker": clean_ticker,
+            "currentPrice": 0.0,
+            "change": 0.0,
+            "changePercent": 0.0,
+            "priceType": "error"
+        }
+
+
+TRACKED_INDEXES = ["VIX", "DJIA", "SP500", "RUSSELL2000"]
+
+
+async def fetch_tracked_indexes() -> List[Dict[str, Any]]:
+    """Fetch real-time data for all tracked market indices."""
+    results = []
+    for idx in TRACKED_INDEXES:
+        try:
+            data = await get_market_index(idx)
+            results.append(data)
+        except Exception as e:
+            logger.debug("Failed to fetch index %s: %s", idx, e)
+            results.append({
+                "index": idx,
+                "displayName": INDEX_DISPLAY_NAMES.get(idx, idx),
+                "ticker": "",
+                "currentPrice": 0.0,
+                "change": 0.0,
+                "changePercent": 0.0,
+                "priceType": "error"
+            })
+    return results
+
+
+@app.get("/api/market-indexes")
+async def get_all_market_indexes():
+    """
+    Returns data for all market indexes (VIX, DJIA, S&P500, Russell 2000)
+    in a single request for efficiency.
+    """
+    results = await fetch_tracked_indexes()
+    return JSONResponse(results)
+
+
 @app.get("/api/symbols/{symbol}")
 async def get_symbol_detail(
     symbol: str,
@@ -476,7 +696,7 @@ async def get_symbol_detail(
     limit: Optional[int] = 1000
 ):
     symbol = symbol.upper()
-    summary = market_buffer.get_summary(symbol)
+    summary = market_buffer.get_summary(symbol, duration=duration or "24h")
 
     # Determine start_time based on requested duration window
     now = datetime.now()
@@ -560,10 +780,15 @@ async def get_symbol_detail(
 @app.websocket("/ws")
 @app.websocket("/ws/updates")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    logger.info("WebSocket request received")
+    await manager.connect(websocket, register=False)
     try:
+        logger.info("WebSocket connection accepted, preparing initial state")
         # Immediately send current state upon connection
+        logger.info("Fetching symbols from market buffer")
         symbols = market_buffer.get_symbols()
+        logger.info(f"Found {len(symbols)} symbols to report")
+
         summaries = []
         decisions = []
         for sym in symbols:
@@ -574,20 +799,31 @@ async def websocket_endpoint(websocket: WebSocket):
             summaries.append(s)
             decisions.append(r)
 
+        # Get initial market indexes
+        market_indexes = await fetch_tracked_indexes()
+
+        logger.info(f"Sending init message with {len(summaries)} symbols and {len(market_indexes)} market indexes")
         await websocket.send_json({
             "type": "init",
             "timestamp": time.time(),
             "time_str": datetime.now().strftime("%H:%M:%S"),
             "symbols": summaries,
-            "decisions": decisions
+            "decisions": decisions,
+            "market_indexes": market_indexes,
+            "marketIndexes": market_indexes
         })
+        await manager.register(websocket)
+        logger.info("Init message sent successfully, entering receive loop")
 
         while True:
             # Keep socket open and accept incoming ping/client messages
-            await websocket.receive_text()
+            msg = await websocket.receive_text()
+            logger.debug(f"Received message from client: {msg[:50]}")
     except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected normally")
         await manager.disconnect(websocket)
-    except Exception:
+    except Exception as e:
+        logger.error(f"WebSocket error: {type(e).__name__}: {e}", exc_info=True)
         await manager.disconnect(websocket)
 
 

@@ -1,7 +1,7 @@
 """Adapters for external data sources like Adanos sentiment analysis."""
 import logging
 from typing import List, Optional, Union
-import datetime
+from datetime import datetime
 import os
 
 from src.domain import MarketState, FullState
@@ -52,7 +52,7 @@ class AdanosDataAdapter:
             # Mock sentiment response structure
             sentiment_record = {
                 'symbol': symbol.upper(),
-                'timestamp': datetime.datetime.now(),
+                'timestamp': datetime.now(),
                 'score': 0.0,  # Will be populated by actual API
                 'source': 'adanos_api',
                 'timeframe': timeframe
@@ -84,7 +84,7 @@ class AdanosDataAdapter:
 
                     sentiment = {
                         'symbol': item.get('symbol', '').upper(),
-                        'timestamp': datetime.datetime.fromisoformat(
+                        'timestamp': datetime.fromisoformat(
                             item.get('timestamp', '').replace('Z', '+00:00')
                         ),
                         'score': score,

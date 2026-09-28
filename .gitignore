@@ -1,4 +1,9 @@
-# Environment Config
+# Logs and PID
+logs/*.log
+*.log
+*.pid
+!logs/.gitkeep
+
 
 .venv/
 __pycache__/

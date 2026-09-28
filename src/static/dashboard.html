@@ -259,6 +259,125 @@
             font-weight: 500;
         }
 
+        /* Market Index Boxes Across Top */
+        .market-indexes-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        @media (max-width: 1024px) {
+            .market-indexes-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 600px) {
+            .market-indexes-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .market-index-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: all 0.2s ease-in-out;
+            position: relative;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        /* If the index is up, make it green */
+        .market-index-card.up {
+            border-color: rgba(16, 185, 129, 0.6);
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, var(--bg-card) 65%);
+            box-shadow: 0 4px 16px rgba(16, 185, 129, 0.15);
+        }
+
+        /* If the index is down, make it red */
+        .market-index-card.down {
+            border-color: rgba(239, 68, 68, 0.6);
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, var(--bg-card) 65%);
+            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.15);
+        }
+
+        .market-index-card.neutral {
+            border-color: var(--border-color);
+            background-color: var(--bg-card);
+        }
+
+        .market-index-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .market-index-card.up:hover {
+            border-color: var(--color-buy);
+            box-shadow: 0 8px 24px rgba(16, 185, 129, 0.25);
+        }
+
+        .market-index-card.down:hover {
+            border-color: var(--color-sell);
+            box-shadow: 0 8px 24px rgba(239, 68, 68, 0.25);
+        }
+
+        .index-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.01em;
+        }
+
+        .index-name {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-primary);
+        }
+
+        .index-ticker {
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .index-main-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 8px;
+        }
+
+        .index-price {
+            font-size: 1.45rem;
+            font-weight: 800;
+            font-family: monospace;
+            letter-spacing: -0.02em;
+        }
+
+        .index-change {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            font-family: monospace;
+            white-space: nowrap;
+        }
+
+        .index-change.positive, .index-price.positive { color: var(--color-buy); }
+        .index-change.negative, .index-price.negative { color: var(--color-sell); }
+        .index-change.neutral, .index-price.neutral { color: var(--text-secondary); }
+
         /* Drill-Down View */
         .drilldown-view {
             animation: fadeIn 0.2s ease-in-out;
@@ -357,19 +476,92 @@
             font-weight: 600;
         }
 
-        .duration-select {
+        .custom-dropdown-wrapper {
+            position: relative;
+            min-width: 140px;
+        }
+
+        .custom-dropdown-btn {
             background-color: var(--bg-secondary);
             border: 1px solid var(--border-color);
             color: var(--text-primary);
-            padding: 6px 12px;
+            padding: 6px 32px 6px 12px;
             border-radius: 6px;
             font-size: 0.85rem;
             cursor: pointer;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: all 0.15s ease;
         }
 
-        .duration-select:hover {
+        .custom-dropdown-btn:hover {
             border-color: var(--color-accent);
+        }
+
+        .dropdown-chevron {
+            width: 14px;
+            height: 14px;
+            transition: transform 0.2s ease;
+            fill: var(--text-secondary);
+        }
+
+        .custom-dropdown-wrapper.open .dropdown-chevron {
+            transform: rotate(180deg);
+        }
+
+        .dropdown-menu {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: 0;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-8px);
+            transition: all 0.2s ease;
+            z-index: 10;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .custom-dropdown-wrapper.open .dropdown-menu {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .dropdown-item {
+            padding: 10px 14px;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+        }
+
+        .dropdown-item:hover {
+            background-color: var(--bg-card-hover);
+        }
+
+        .dropdown-item.selected {
+            color: var(--color-accent);
+            background-color: rgba(59, 130, 246, 0.1);
+        }
+
+        .dropdown-item::after {
+            content: '→';
+            float: right;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            color: var(--color-accent);
+        }
+
+        .dropdown-item:hover::after {
+            opacity: 1;
         }
 
         .checkbox-label {
@@ -539,6 +731,30 @@
         </header>
 
         <main>
+            <!-- Market Indexes Display Across Top -->
+            <div class="market-indexes-row">
+                <div 
+                    v-for="idx in displayMarketIndexes" 
+                    :key="idx.index" 
+                    class="market-index-card"
+                    :class="getIndexCardClass(idx)"
+                >
+                    <div class="index-header">
+                        <span class="index-name">{{ idx.displayName || idx.index }}</span>
+                        <span class="index-ticker">{{ idx.ticker }}</span>
+                    </div>
+                    <div class="index-main-row">
+                        <span class="index-price" :class="getChangeClass(idx.changePercent)">
+                            {{ idx.index === 'VIX' ? '' : '$' }}{{ formatPrice(idx.currentPrice) }}
+                        </span>
+                        <div class="index-change" :class="getChangeClass(idx.changePercent)">
+                            <span>{{ formatSignedChange(idx.change) }}</span>
+                            <span>({{ formatChange(idx.changePercent) }}%)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Summary Dashboard View -->
             <div v-if="!selectedSymbol">
                 <div class="summary-header">
@@ -598,7 +814,7 @@
 
             <!-- Drill-Down Symbol View -->
             <div v-else class="drilldown-view">
-                <button class="back-btn" @click="clearSelection">
+                <button class="back-btn" @click="goBack">
                     ← Back to Portfolio Summary
                 </button>
 
@@ -623,14 +839,25 @@
                         <div class="chart-controls">
                             <div class="control-group">
                                 <label class="control-label">Duration:</label>
-                                <select v-model="selectedDuration" @change="onDurationChange" class="duration-select">
-                                    <option value="1h">1 Hour</option>
-                                    <option value="24h">24 Hours</option>
-                                    <option value="5d">5 Days</option>
-                                    <option value="30d">30 Days</option>
-                                    <option value="1y">1 Year</option>
-                                    <option value="ytd">YTD</option>
-                                </select>
+                                <div class="custom-dropdown-wrapper" :class="{ open: dropdownOpen }">
+                                    <button class="custom-dropdown-btn" @click="toggleDropdown">
+                                        <span class="dropdown-value">{{ getDurationLabel(selectedDuration) }}</span>
+                                        <svg class="dropdown-chevron" viewBox="0 0 24 24">
+                                            <path d="M7 10l5 5 5-5H7z"/>
+                                        </svg>
+                                    </button>
+                                    <div class="dropdown-menu">
+                                        <div
+                                            v-for="opt in durationOptions"
+                                            :key="opt.value"
+                                            class="dropdown-item"
+                                            :class="{ selected: selectedDuration === opt.value }"
+                                            @click="selectDuration(opt.value)"
+                                        >
+                                            {{ opt.label }}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                             <div class="control-group">
                                 <label class="control-label">Moving Averages:</label>
@@ -696,7 +923,7 @@
     </div>
 
     <script>
-        const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
+        const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
         createApp({
             setup() {
@@ -709,9 +936,105 @@
                 const selectedDuration = ref('24h');
                 const show200DayMA = ref(false);
                 const show50DayMA = ref(false);
+                const dropdownOpen = ref(false);
+                const durationOptions = [
+                    { value: '1h', label: '1 Hour' },
+                    { value: '24h', label: '24 Hours' },
+                    { value: '5d', label: '5 Days' },
+                    { value: '30d', label: '30 Days' },
+                    { value: '1y', label: '1 Year' },
+                    { value: 'ytd', label: 'YTD' }
+                ];
+
+                const INDEX_ORDER = ['VIX', 'DJIA', 'SP500', 'RUSSELL2000'];
+                const INDEX_DISPLAY_NAMES = {
+                    'VIX': 'VIX',
+                    'DJIA': 'DJIA',
+                    'SP500': 'S&P 500',
+                    'RUSSELL2000': 'Russel 2k'
+                };
+                const INDEX_TICKERS = {
+                    'VIX': '^VIX',
+                    'DJIA': '^DJI',
+                    'SP500': 'SPX',
+                    'RUSSELL2000': 'RUT'
+                };
+
+                const marketIndexesMap = reactive({
+                    'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: 0, change: 0, changePercent: 0 },
+                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: '^DJI', currentPrice: 0, change: 0, changePercent: 0 },
+                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPX', currentPrice: 0, change: 0, changePercent: 0 },
+                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'RUT', currentPrice: 0, change: 0, changePercent: 0 }
+                });
+
+                const displayMarketIndexes = computed(() => {
+                    return INDEX_ORDER.map(key => marketIndexesMap[key] || {
+                        index: key,
+                        displayName: INDEX_DISPLAY_NAMES[key] || key,
+                        ticker: INDEX_TICKERS[key] || key,
+                        currentPrice: 0,
+                        change: 0,
+                        changePercent: 0
+                    });
+                });
+                const marketIndexes = displayMarketIndexes;
+
+                function getIndexCardClass(idx) {
+                    const change = idx.changePercent !== undefined ? idx.changePercent : (idx.change || 0);
+                    if (change > 0) return 'up';
+                    if (change < 0) return 'down';
+                    return 'neutral';
+                }
+
+                function formatSignedChange(val) {
+                    if (val === undefined || val === null || isNaN(val)) return '0.00';
+                    const num = Number(val);
+                    const sign = num > 0 ? '+' : (num < 0 ? '-' : '');
+                    return sign + Math.abs(num).toFixed(2);
+                }
+
+                function updateMarketIndexes(indexes) {
+                    if (!Array.isArray(indexes)) return;
+                    indexes.forEach(item => {
+                        const key = (item.index || '').toUpperCase();
+                        if (marketIndexesMap[key]) {
+                            marketIndexesMap[key] = {
+                                ...marketIndexesMap[key],
+                                ...item,
+                                displayName: item.displayName || INDEX_DISPLAY_NAMES[key] || key
+                            };
+                        }
+                    });
+                }
+
+                async function fetchMarketIndexes() {
+                    try {
+                        const res = await fetch('/api/market-indexes');
+                        if (res.ok) {
+                            const data = await res.json();
+                            updateMarketIndexes(data);
+                        }
+                    } catch (e) {
+                        console.warn('Could not fetch market indexes:', e);
+                    }
+                }
 
                 let chartInstance = null;
                 let ws = null;
+                let hasInternalHistory = false;
+
+                function getTargetSymbolFromLocation() {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const querySymbol = urlParams.get('symbol');
+                    let pathSymbol = null;
+                    if (window.location.pathname.startsWith('/symbol/')) {
+                        const parts = window.location.pathname.split('/');
+                        if (parts[2]) {
+                            pathSymbol = decodeURIComponent(parts[2]);
+                        }
+                    }
+                    return querySymbol || pathSymbol;
+                }
 
                 const symbols = computed(() => {
                     return Object.values(symbolsMap).sort((a, b) => a.symbol.localeCompare(b.symbol));
@@ -826,12 +1149,14 @@
                         }
                     };
 
-                    ws.onclose = () => {
+                    ws.onclose = (event) => {
+                        console.warn('WebSocket closed:', event.code, event.reason || 'no reason provided');
                         connected.value = false;
                         setTimeout(connectWebSocket, 2000);
                     };
 
-                    ws.onerror = () => {
+                    ws.onerror = (error) => {
+                        console.error('WebSocket error encountered:', error);
                         connected.value = false;
                         ws.close();
                     };
@@ -926,6 +1251,11 @@
                         lastTimeStr.value = data.time_str;
                     }
 
+                    const indexes = data.marketIndexes || data.market_indexes;
+                    if (indexes && Array.isArray(indexes)) {
+                        updateMarketIndexes(indexes);
+                    }
+
                     if (data.symbols && Array.isArray(data.symbols)) {
                         data.symbols.forEach(symObj => {
                             symbolsMap[symObj.symbol] = {
@@ -938,17 +1268,17 @@
                                 tickHistoryMap[symObj.symbol] = [];
                             }
                             if (symObj.currentPrice > 0) {
-                                const hist = tickHistoryMap[symObj.symbol];
-                                const lastItem = hist[hist.length - 1];
-                                const nowTs = data.timestamp ? (data.timestamp < 1e11 ? data.timestamp * 1000 : data.timestamp) : Date.now();
-                                if (!lastItem || (nowTs - lastItem.timestamp >= 2000) || lastItem.price !== symObj.currentPrice) {
-                                    hist.push({
-                                        time: data.time_str || new Date(nowTs).toLocaleTimeString(),
-                                        price: symObj.currentPrice,
-                                        timestamp: nowTs
-                                    });
-                                    if (hist.length > 500) hist.shift();
-                                }
+                                    const hist = tickHistoryMap[symObj.symbol];
+                                    const lastItem = hist[hist.length - 1];
+                                    const nowTs = data.timestamp ? (data.timestamp < 1e11 ? data.timestamp * 1000 : data.timestamp) : Date.now();
+                                    if (!lastItem || (nowTs - lastItem.timestamp >= 3000) || lastItem.price !== symObj.currentPrice) {
+                                        hist.push({
+                                            time: data.time_str || new Date(nowTs).toLocaleTimeString(),
+                                            price: symObj.currentPrice,
+                                            timestamp: nowTs
+                                        });
+                                        if (hist.length > 250) hist.shift();
+                                    }
                             }
                         });
 
@@ -994,8 +1324,19 @@
                     }
                 }
 
-                async function selectSymbol(symbol) {
+                async function selectSymbol(symbol, pushHistory = true) {
+                    if (!symbol) return;
                     selectedSymbol.value = symbol;
+
+                    if (pushHistory) {
+                        hasInternalHistory = true;
+                        const targetUrl = window.location.pathname.startsWith('/symbol/')
+                            ? `/symbol/${encodeURIComponent(symbol)}`
+                            : `${window.location.pathname}?symbol=${encodeURIComponent(symbol)}`;
+                        window.history.pushState({ symbol: symbol }, '', targetUrl);
+                    }
+                    document.title = `${symbol} - KDR Real-Time Monitor`;
+
                     // Seed initial tick if none exists yet but summary has a live price
                     if (!tickHistoryMap[symbol] || tickHistoryMap[symbol].length === 0) {
                         const symData = symbolsMap[symbol];
@@ -1026,12 +1367,40 @@
                     }
                 }
 
-                function clearSelection() {
+                function toggleDropdown() {
+                    dropdownOpen.value = !dropdownOpen.value;
+                }
+
+                function selectDuration(value) {
+                    selectedDuration.value = value;
+                    dropdownOpen.value = false;
+                    onDurationChange();
+                }
+
+                function getDurationLabel(value) {
+                    const opt = durationOptions.find(opt => opt.value === value);
+                    return opt ? opt.label : 'Select duration';
+                }
+
+                function goBack() {
+                    if (hasInternalHistory) {
+                        window.history.back();
+                    } else {
+                        clearSelection(true);
+                    }
+                }
+
+                function clearSelection(updateHistory = true) {
                     if (chartInstance) {
                         chartInstance.destroy();
                         chartInstance = null;
                     }
                     selectedSymbol.value = null;
+                    document.title = 'KDR Real-Time Market & Decision Monitor';
+                    if (updateHistory) {
+                        const cleanUrl = window.location.pathname.startsWith('/symbol/') ? '/' : window.location.pathname;
+                        window.history.pushState({ symbol: null }, '', cleanUrl);
+                    }
                 }
 
                 function getFilteredHistory(hist) {
@@ -1126,8 +1495,9 @@
                         backgroundColor: fillColor,
                         fill: true,
                         tension: 0.25,
-                        pointRadius: isSinglePoint ? 6 : 3,
-                        pointHoverRadius: isSinglePoint ? 8 : 6,
+                        pointRadius: isSinglePoint ? 6 : 2,
+                        pointHoverRadius: isSinglePoint ? 8 : 5,
+                        pointHitRadius: 4,
                         borderWidth: 2
                     }];
 
@@ -1263,6 +1633,45 @@
 
                 onMounted(() => {
                     connectWebSocket();
+                    fetchMarketIndexes();
+
+                    // Handle popstate for browser back / forward navigation
+                    window.addEventListener('popstate', (event) => {
+                        const stateSymbol = event.state && event.state.symbol ? event.state.symbol : null;
+                        const locationSymbol = getTargetSymbolFromLocation();
+                        const target = stateSymbol || locationSymbol;
+
+                        if (target) {
+                            selectSymbol(target, false);
+                        } else {
+                            clearSelection(false);
+                        }
+                    });
+
+                    // Check initial URL parameters/path
+                    const initialSymbol = getTargetSymbolFromLocation();
+                    if (initialSymbol) {
+                        window.history.replaceState({ symbol: initialSymbol }, '', window.location.href);
+                        selectSymbol(initialSymbol, false);
+                    } else {
+                        window.history.replaceState({ symbol: null }, '', window.location.href);
+                    }
+
+                    // Click outside handler to close dropdown
+                    const handleClickOutside = (event) => {
+                        const wrapper = document.querySelector('.custom-dropdown-wrapper');
+                        if (wrapper && !wrapper.contains(event.target) && dropdownOpen.value) {
+                            dropdownOpen.value = false;
+                        }
+                    };
+                    document.addEventListener('click', handleClickOutside);
+                });
+
+                onUnmounted(() => {
+                    document.removeEventListener('click', handleClickOutside);
+                    if (chartInstance) {
+                        chartInstance.destroy();
+                    }
                 });
 
                 return {
@@ -1274,16 +1683,26 @@
                     show200DayMA,
                     show50DayMA,
                     onDurationChange,
+                    dropdownOpen,
+                    durationOptions,
+                    toggleDropdown,
+                    selectDuration,
+                    getDurationLabel,
                     initChart,
                     activeSymbolData,
                     activeDecision,
                     symbolDecisions,
                     selectSymbol,
                     clearSelection,
+                    goBack,
                     formatPrice,
                     formatChange,
                     formatNumber,
-                    getChangeClass
+                    getChangeClass,
+                    displayMarketIndexes,
+                    marketIndexes,
+                    getIndexCardClass,
+                    formatSignedChange
                 };
             }
         }).mount('#app');
