@@ -87,14 +87,20 @@ stop_daemon() {
         fi
     done
 
-    rm -f "$PID_FILE"
-
-    if ps -p $PID > /dev/null 2>&1; then
-        echo "Failed to stop KDR service"
-        exit 1
-    else
-        echo "✓ KDR service stopped successfully"
+    # Clean up any lingering scraper processes and processes on port 8001
+    local STALE_PIDS=$(pgrep -f "python.*src/scraper.py" 2>/dev/null || true)
+    if [ -n "$STALE_PIDS" ]; then
+        echo "Cleaning up lingering scraper processes: $STALE_PIDS"
+        kill -9 $STALE_PIDS 2>/dev/null || true
     fi
+
+    local PORT_PIDS=$(lsof -ti :8001 2>/dev/null || true)
+    if [ -n "$PORT_PIDS" ]; then
+        echo "Releasing port 8001 (PIDs: $PORT_PIDS)..."
+        kill -9 $PORT_PIDS 2>/dev/null || true
+    fi
+
+    echo "✓ KDR service stopped successfully"
 }
 
 # Function to show status

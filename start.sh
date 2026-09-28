@@ -113,43 +113,38 @@ LOG_FILE="${SCRIPT_DIR}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
 
 # Function to stop the service
 stop_kdr() {
-    if [ ! -f "$PID_FILE" ]; then
-        echo -e "${RED}✗ No KDR service is running${NC}"
-        exit 1
-    fi
-
-    local PID=$(cat "$PID_FILE")
-
-    if ! ps -p $PID > /dev/null 2>&1; then
-        echo -e "${RED}✗ Process $PID is not running${NC}"
-        rm -f "$PID_FILE"
-        exit 1
-    fi
-
-    echo -e "${YELLOW}Stopping KDR service (PID: $PID)...${NC}"
-    kill -TERM $PID
-
-    # Wait for process to terminate
-    local count=0
-    while ps -p $PID > /dev/null 2>&1; do
-        sleep 1
-        count=$((count + 1))
-        if [ $count -ge 30 ]; then
-            echo -e "${RED}✗ Process did not terminate gracefully${NC}"
-            kill -KILL $PID
-            sleep 2
-            break
+    if [ -f "$PID_FILE" ]; then
+        local PID=$(cat "$PID_FILE")
+        if ps -p $PID > /dev/null 2>&1; then
+            echo -e "${YELLOW}Stopping KDR service (PID: $PID)...${NC}"
+            kill -TERM $PID 2>/dev/null || true
+            local count=0
+            while ps -p $PID > /dev/null 2>&1; do
+                sleep 1
+                count=$((count + 1))
+                if [ $count -ge 10 ]; then
+                    kill -KILL $PID 2>/dev/null || true
+                    break
+                fi
+            done
         fi
-    done
-
-    rm -f "$PID_FILE"
-
-    if ps -p $PID > /dev/null 2>&1; then
-        echo -e "${RED}✗ Failed to stop KDR service${NC}"
-        exit 1
-    else
-        echo -e "${GREEN}✓ KDR service stopped${NC}"
+        rm -f "$PID_FILE"
     fi
+
+    # Clean up any lingering scraper processes and processes on port 8001
+    local STALE_PIDS=$(pgrep -f "python.*src/scraper.py" 2>/dev/null || true)
+    if [ -n "$STALE_PIDS" ]; then
+        echo -e "${YELLOW}Cleaning up lingering scraper processes: $STALE_PIDS${NC}"
+        kill -9 $STALE_PIDS 2>/dev/null || true
+    fi
+
+    local PORT_PIDS=$(lsof -ti :8001 2>/dev/null || true)
+    if [ -n "$PORT_PIDS" ]; then
+        echo -e "${YELLOW}Releasing port 8001 (PIDs: $PORT_PIDS)...${NC}"
+        kill -9 $PORT_PIDS 2>/dev/null || true
+    fi
+
+    echo -e "${GREEN}✓ KDR service stopped${NC}"
 }
 
 # Parse command line arguments

@@ -337,6 +337,10 @@ class MarketDataBuffer:
             elif isinstance(timestamp, datetime):
                 ts = timestamp.timestamp()
 
+        # Reject zero or negative price ticks to protect open price and calculations
+        if float(price) <= 0:
+            return MarketTick(symbol=symbol, price=0.0, size=0.0, timestamp=ts)
+
         tick = MarketTick(symbol=symbol, price=float(price), size=float(size or 0.0), timestamp=ts)
 
         with self._lock:
@@ -576,7 +580,9 @@ class MarketDataBuffer:
                 change = current - initial
                 change_pct = ((current - initial) / initial * 100.0) if initial and initial > 0 else 0.0
 
-            prices = [t.price for t in history]
+            prices = [t.price for t in history if t.price > 0]
+            if not prices:
+                prices = [current]
             total_vol = sum(t.size for t in history)
 
             result = {

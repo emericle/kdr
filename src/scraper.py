@@ -595,8 +595,21 @@ def run_worker_threads(
             start_web_server_thread(host="0.0.0.0", port=8001)
             logger.info("Real-time Dashboard available at: http://localhost:8001")
             for sym in resolved_symbols:
-                if market_buffer and not market_buffer.get_latest_tick(sym):
-                    market_buffer.add_tick(sym, 0.0, 0.0)
+                if market_buffer:
+                    if db_manager and hasattr(db_manager, "get_latest_market_record"):
+                        try:
+                            rec = db_manager.get_latest_market_record(sym)
+                            if rec and rec.get("price", 0) > 0:
+                                market_buffer.add_tick(
+                                    symbol=sym,
+                                    price=rec["price"],
+                                    size=rec.get("volume", 0.0),
+                                    timestamp=rec.get("timestamp")
+                                )
+                                if rec.get("open", 0) > 0:
+                                    market_buffer._open_prices[sym] = rec["open"]
+                        except Exception as e:
+                            logger.debug("Could not seed initial tick for %s: %s", sym, e)
         except Exception as ws_err:
             logger.warning("Could not start dashboard web server thread: %s", ws_err)
 
