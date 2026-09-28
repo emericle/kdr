@@ -131,48 +131,76 @@ class MarketDataBuffer:
             symbol: Stock/crypto symbol
             duration: Time interval for price change calculation (1h, 24h, 5d, 30d, 1y, ytd)
         Returns:
-            Dict with currentPrice, change, and changePercent, or None if no history
+            Dict with currentPrice, change, and changePercent, or None if no history available anywhere
         """
         symbol = symbol.upper()
         with self._lock:
             history = self._history.get(symbol)
-            if not history:
-                return None
-
-            current_price = history[-1].price
             db = get_db_manager()
 
-            if db and hasattr(db, 'get_price_at_interval_start'):
+            # Priority 1: Use buffer history if available
+            if history:
+                current_price = history[-1].price
+
+                if db and hasattr(db, 'get_price_at_interval_start'):
+                    try:
+                        interval_start_price = db.get_price_at_interval_start(symbol, duration)
+                        if interval_start_price is not None and interval_start_price > 0:
+                            change = current_price - interval_start_price
+                            change_pct = (change / interval_start_price * 100.0)
+                            return {
+                                "currentPrice": current_price,
+                                "change": change,
+                                "changePercent": change_pct
+                            }
+                    except Exception as e:
+                        logger.debug(f"Database interval price lookup failed, falling back to buffer: {e}")
+
+                fallback_open_price = self._open_prices.get(symbol, history[0].price)
+                change = current_price - fallback_open_price
+                change_pct = (change / fallback_open_price * 100.0) if fallback_open_price > 0 else 0.0
+                return {
+                    "currentPrice": current_price,
+                    "change": change,
+                    "changePercent": change_pct
+                }
+
+            # Priority 2: Try database for buffer-less symbols (market indices, etc.)
+            if db and hasattr(db, 'get_latest_price'):
                 try:
-                    interval_start_price = db.get_price_at_interval_start(symbol, duration)
-                    if interval_start_price is not None and interval_start_price > 0:
-                        change = current_price - interval_start_price
-                        change_pct = (change / interval_start_price * 100.0)
+                    # Use a shorter interval for fallback (latest price from last 2 days)
+                    start_date = datetime.now() - timedelta(days=2)
+                    alpaca_data = self._query_historical_ticks_safe_for_buffer(
+                        db, symbol, start_date, limit=2
+                    )
+                    if alpaca_data and len(alpaca_data) >= 2:
+                        latest = alpaca_data[-1]
+                        previous_close = float(latest.get("price", 0))
+                        current_price = previous_close
+
+                        # For databases, use previous close as reference for change
+                        change = 0.0  # No reliable change data from just latest prices
+                        change_pct = 0.0
                         return {
                             "currentPrice": current_price,
                             "change": change,
                             "changePercent": change_pct
                         }
                 except Exception as e:
-                    logger.debug(f"Database interval price lookup failed, falling back to buffer: {e}")
+                    logger.debug(f"Database lookup for {symbol} failed, no buffer history: {e}")
 
-            fallback_open_price = self._open_prices.get(symbol, history[0].price)
-            change = current_price - fallback_open_price
-            change_pct = (change / fallback_open_price * 100.0) if fallback_open_price > 0 else 0.0
-            return {
-                "currentPrice": current_price,
-                "change": change,
-                "changePercent": change_pct
-            }
+            # No data available
+            return None
 
     def get_summary(self, symbol: str, duration: str = "24h") -> Dict[str, Any]:
         """Thread-safe summary calculation including price change based on interval.
 
         Args:
             symbol: Stock/crypto symbol
-            duration: Time interval for price change calculation
+            duration: Time interval for price change calculation (1h, 24h, 5d, 30d, 1y, ytd)
         Returns:
             Dict with symbol, currentPrice, changePercent, high, low, volume, lastUpdate
+                  plus all duration-based percentage changes (changePercent1h, changePercent24h, etc.)
         """
         symbol = symbol.upper()
         with self._lock:
@@ -190,6 +218,23 @@ class MarketDataBuffer:
 
             current = history[-1].price
             db = get_db_manager()
+
+            # Calculate percentage changes for all available durations
+            duration_pcts = {}
+            for dur in ["1h", "24h", "5d", "30d", "1y", "ytd"]:
+                interval_start_price = None
+                try:
+                    if db and hasattr(db, 'get_price_at_interval_start'):
+                        interval_start_price = db.get_price_at_interval_start(symbol, dur)
+                except Exception:
+                    pass
+
+                # Fallback to first tick in buffer if database lookup fails
+                if interval_start_price is None:
+                    interval_start_price = self._open_prices.get(symbol, history[0].price)
+
+                if interval_start_price and interval_start_price > 0:
+                    duration_pcts[f"changePercent{dur}"] = round(((current - interval_start_price) / interval_start_price * 100.0), 2)
 
             if db and hasattr(db, 'get_price_at_interval_start'):
                 try:
@@ -209,7 +254,7 @@ class MarketDataBuffer:
             prices = [t.price for t in history]
             total_vol = sum(t.size for t in history)
 
-            return {
+            result = {
                 "symbol": symbol,
                 "currentPrice": round(current, 2),
                 "changePercent": round(change_pct, 2),
@@ -218,6 +263,11 @@ class MarketDataBuffer:
                 "volume": round(total_vol, 2),
                 "lastUpdate": datetime.fromtimestamp(history[-1].timestamp).strftime("%H:%M:%S")
             }
+
+            # Add all duration-based percentage changes
+            result.update(duration_pcts)
+
+            return result
 
 
 class DecisionBuffer:
@@ -310,6 +360,36 @@ def get_db_manager():
         except Exception as e:
             logger.debug("DatabaseManager not initialized in web_server: %s", e)
     return _db_manager_instance
+
+
+def _query_historical_ticks_safe_for_buffer(
+    db: Any,
+    symbol: str,
+    start_time: Optional[datetime],
+    limit: int
+) -> List[Dict[str, Any]]:
+    """
+    Non-async version for buffer usage. Queries historical market data synchronously.
+    Note: This is only used when buffer has no history (for market indices).
+    """
+    global _db_is_available, _db_last_attempt_time
+    now_ts = time.time()
+    if not _db_is_available and (now_ts - _db_last_attempt_time < _DB_RETRY_INTERVAL):
+        return []
+
+    _db_last_attempt_time = now_ts
+    try:
+        ticks = db.get_historical_market_data(
+            symbol=symbol,
+            start_time=start_time,
+            limit=limit
+        )
+        _db_is_available = True
+        return ticks or []
+    except Exception as db_err:
+        _db_is_available = False
+        logger.debug("Database query for historical market data (buffer) failed: %s", db_err)
+        return []
 
 
 async def _query_historical_ticks_safe(

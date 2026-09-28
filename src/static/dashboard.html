@@ -780,8 +780,8 @@
                         </div>
                         <div class="card-price-row">
                             <span class="current-price">${{ formatPrice(item.currentPrice) }}</span>
-                            <span class="change-pct" :class="getChangeClass(item.changePercent)">
-                                {{ formatChange(item.changePercent) }}%
+                            <span class="change-pct" :class="getChangeClass(item['changePercent' + selectedDuration.value])">
+                                {{ formatChange(item['changePercent' + selectedDuration.value]) }}%
                             </span>
                         </div>
                         <div class="card-stats">
@@ -826,8 +826,8 @@
                                 <h3>{{ activeSymbolData.symbol }} Real-Time Ticks</h3>
                                 <div class="chart-price-large">
                                     <span class="current-price">${{ formatPrice(activeSymbolData.currentPrice) }}</span>
-                                    <span class="change-pct" :class="getChangeClass(activeSymbolData.changePercent)">
-                                        {{ formatChange(activeSymbolData.changePercent) }}%
+                                    <span class="change-pct" :class="getChangeClass(activeSymbolData['changePercent' + selectedDuration.value])">
+                                        {{ formatChange(activeSymbolData['changePercent' + selectedDuration.value]) }}%
                                     </span>
                                 </div>
                             </div>
@@ -1293,8 +1293,10 @@
                                 decisionsMap[dec.symbol] = [];
                             }
                             const list = decisionsMap[dec.symbol];
-                            // Prepend if new
-                            if (!list.length || list[0].timestamp !== dec.timestamp) {
+                            // Prepend if new and the action is different from the last decision
+                            const lastDecision = list.length > 0 ? list[0] : null;
+                            const actionChanged = !lastDecision || lastDecision.action !== dec.action;
+                            if (actionChanged) {
                                 list.unshift(dec);
                                 if (list.length > 30) list.pop();
                             }
@@ -1478,7 +1480,8 @@
                     const labels = filteredHistory.map(h => h.time);
                     const prices = filteredHistory.map(h => h.price);
 
-                    const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
+                    const durationChangePct = activeSymbolData.value['changePercent' + selectedDuration.value] || 0;
+                    const isUp = durationChangePct >= 0;
                     const strokeColor = isUp ? '#10b981' : '#ef4444';
                     const fillColor = isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
                     const ma200Color = '#3b82f6';
@@ -1607,7 +1610,8 @@
                     chartInstance.data.datasets[0].pointRadius = isSinglePoint ? 6 : 3;
                     chartInstance.data.datasets[0].pointHoverRadius = isSinglePoint ? 8 : 6;
 
-                    const isUp = (activeSymbolData.value.changePercent || 0) >= 0;
+                    const durationChangePct = activeSymbolData.value['changePercent' + selectedDuration.value] || 0;
+                    const isUp = durationChangePct >= 0;
                     chartInstance.data.datasets[0].borderColor = isUp ? '#10b981' : '#ef4444';
                     chartInstance.data.datasets[0].backgroundColor = isUp ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
 
