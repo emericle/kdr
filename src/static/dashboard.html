@@ -476,19 +476,92 @@
             font-weight: 600;
         }
 
-        .duration-select {
+        .custom-dropdown-wrapper {
+            position: relative;
+            min-width: 140px;
+        }
+
+        .custom-dropdown-btn {
             background-color: var(--bg-secondary);
             border: 1px solid var(--border-color);
             color: var(--text-primary);
-            padding: 6px 12px;
+            padding: 6px 32px 6px 12px;
             border-radius: 6px;
             font-size: 0.85rem;
             cursor: pointer;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: all 0.15s ease;
         }
 
-        .duration-select:hover {
+        .custom-dropdown-btn:hover {
             border-color: var(--color-accent);
+        }
+
+        .dropdown-chevron {
+            width: 14px;
+            height: 14px;
+            transition: transform 0.2s ease;
+            fill: var(--text-secondary);
+        }
+
+        .custom-dropdown-wrapper.open .dropdown-chevron {
+            transform: rotate(180deg);
+        }
+
+        .dropdown-menu {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: 0;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-8px);
+            transition: all 0.2s ease;
+            z-index: 10;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .custom-dropdown-wrapper.open .dropdown-menu {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .dropdown-item {
+            padding: 10px 14px;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+        }
+
+        .dropdown-item:hover {
+            background-color: var(--bg-card-hover);
+        }
+
+        .dropdown-item.selected {
+            color: var(--color-accent);
+            background-color: rgba(59, 130, 246, 0.1);
+        }
+
+        .dropdown-item::after {
+            content: '→';
+            float: right;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            color: var(--color-accent);
+        }
+
+        .dropdown-item:hover::after {
+            opacity: 1;
         }
 
         .checkbox-label {
@@ -766,14 +839,25 @@
                         <div class="chart-controls">
                             <div class="control-group">
                                 <label class="control-label">Duration:</label>
-                                <select v-model="selectedDuration" @change="onDurationChange" class="duration-select">
-                                    <option value="1h">1 Hour</option>
-                                    <option value="24h">24 Hours</option>
-                                    <option value="5d">5 Days</option>
-                                    <option value="30d">30 Days</option>
-                                    <option value="1y">1 Year</option>
-                                    <option value="ytd">YTD</option>
-                                </select>
+                                <div class="custom-dropdown-wrapper" :class="{ open: dropdownOpen }">
+                                    <button class="custom-dropdown-btn" @click="toggleDropdown">
+                                        <span class="dropdown-value">{{ getDurationLabel(selectedDuration) }}</span>
+                                        <svg class="dropdown-chevron" viewBox="0 0 24 24">
+                                            <path d="M7 10l5 5 5-5H7z"/>
+                                        </svg>
+                                    </button>
+                                    <div class="dropdown-menu">
+                                        <div
+                                            v-for="opt in durationOptions"
+                                            :key="opt.value"
+                                            class="dropdown-item"
+                                            :class="{ selected: selectedDuration === opt.value }"
+                                            @click="selectDuration(opt.value)"
+                                        >
+                                            {{ opt.label }}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                             <div class="control-group">
                                 <label class="control-label">Moving Averages:</label>
@@ -839,7 +923,7 @@
     </div>
 
     <script>
-        const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
+        const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
         createApp({
             setup() {
@@ -852,6 +936,15 @@
                 const selectedDuration = ref('24h');
                 const show200DayMA = ref(false);
                 const show50DayMA = ref(false);
+                const dropdownOpen = ref(false);
+                const durationOptions = [
+                    { value: '1h', label: '1 Hour' },
+                    { value: '24h', label: '24 Hours' },
+                    { value: '5d', label: '5 Days' },
+                    { value: '30d', label: '30 Days' },
+                    { value: '1y', label: '1 Year' },
+                    { value: 'ytd', label: 'YTD' }
+                ];
 
                 const INDEX_ORDER = ['VIX', 'DJIA', 'SP500', 'RUSSELL2000'];
                 const INDEX_DISPLAY_NAMES = {
@@ -1274,6 +1367,21 @@
                     }
                 }
 
+                function toggleDropdown() {
+                    dropdownOpen.value = !dropdownOpen.value;
+                }
+
+                function selectDuration(value) {
+                    selectedDuration.value = value;
+                    dropdownOpen.value = false;
+                    onDurationChange();
+                }
+
+                function getDurationLabel(value) {
+                    const opt = durationOptions.find(opt => opt.value === value);
+                    return opt ? opt.label : 'Select duration';
+                }
+
                 function goBack() {
                     if (hasInternalHistory) {
                         window.history.back();
@@ -1548,6 +1656,22 @@
                     } else {
                         window.history.replaceState({ symbol: null }, '', window.location.href);
                     }
+
+                    // Click outside handler to close dropdown
+                    const handleClickOutside = (event) => {
+                        const wrapper = document.querySelector('.custom-dropdown-wrapper');
+                        if (wrapper && !wrapper.contains(event.target) && dropdownOpen.value) {
+                            dropdownOpen.value = false;
+                        }
+                    };
+                    document.addEventListener('click', handleClickOutside);
+                });
+
+                onUnmounted(() => {
+                    document.removeEventListener('click', handleClickOutside);
+                    if (chartInstance) {
+                        chartInstance.destroy();
+                    }
                 });
 
                 return {
@@ -1559,6 +1683,11 @@
                     show200DayMA,
                     show50DayMA,
                     onDurationChange,
+                    dropdownOpen,
+                    durationOptions,
+                    toggleDropdown,
+                    selectDuration,
+                    getDurationLabel,
                     initChart,
                     activeSymbolData,
                     activeDecision,
