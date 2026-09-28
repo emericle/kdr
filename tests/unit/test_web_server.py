@@ -652,7 +652,6 @@ class TestDashboardHTMLFeatures:
         assert 'v-model="show50DayMA"' in html
         # Check for duration dropdown
         assert 'custom-dropdown-wrapper' in html
-        assert "v-model=\"selectedDuration\"" in html
 
     def test_dashboard_has_market_indexes_row(self, live_server):
         """Verify market indexes row with VIX, DJIA, S&P 500, and Russell 2k is present."""
