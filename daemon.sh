@@ -94,9 +94,9 @@ stop_daemon() {
         kill -9 $STALE_PIDS 2>/dev/null || true
     fi
 
-    local PORT_PIDS=$(lsof -ti :8001 2>/dev/null || true)
+    local PORT_PIDS=$(lsof -ti :8001 -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$PORT_PIDS" ]; then
-        echo "Releasing port 8001 (PIDs: $PORT_PIDS)..."
+        echo "Releasing port 8001 listener (PIDs: $PORT_PIDS)..."
         kill -9 $PORT_PIDS 2>/dev/null || true
     fi
 
