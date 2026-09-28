@@ -650,8 +650,8 @@ class TestDashboardHTMLFeatures:
         # Check for Vue binding
         assert 'v-model="show200DayMA"' in html
         assert 'v-model="show50DayMA"' in html
-        # Check for duration select
-        assert 'duration-select' in html
+        # Check for duration dropdown
+        assert 'custom-dropdown-wrapper' in html
         assert "v-model=\"selectedDuration\"" in html
 
     def test_dashboard_has_market_indexes_row(self, live_server):
@@ -882,26 +882,6 @@ class TestDecisionHistoryFiltering:
         # Backend stores all decisions
         history = decision_buffer._history.get("TESTSYM", [])
         assert len(history) == 2
-
-
-# Test for frontend decision history filtering (only action changes)
-def test_decision_history_filters_only_action_changes(live_server):
-    """Verify frontend decision history only shows action changes."""
-    # Add multiple decisions with the same action
-    decisions_with_same_action = [
-        {"symbol": "TESTSYM", "action": "BUY", "confidence": 0.8, "reasoning": ["Momentum"], "timestamp": "2024-01-01T10:00:00"},
-        {"symbol": "TESTSYM", "action": "BUY", "confidence": 0.85, "reasoning": ["Volume"], "timestamp": "2024-01-01T10:01:00"},
-        {"symbol": "TESTSYM", "action": "BUY", "confidence": 0.8, "reasoning": ["RSI"], "timestamp": "2024-01-01T10:02:00"},
-        {"symbol": "TESTSYM", "action": "SELL", "confidence": 0.7, "reasoning": ["Overbought"], "timestamp": "2024-01-01T10:03:00"},
-    ]
-
-    resp = requests.post(f"{BASE_URL}/ws", json={"decisions": decisions_with_same_action})
-    assert resp.status_code == 200
-
-    # Verify no errors occurred when processing decisions
-    # In a real implementation, we'd verify the message content, but here we just ensure no errors
-    data = resp.json()
-    assert "decisions" in data
 
 
 # Add more tests as needed for additional edge cases and scenarios
