@@ -67,14 +67,23 @@ echo ""
 
 # Step 1: Check Python Version
 echo -e "${YELLOW}[1/4]${NC} Checking Python version..."
-if ! command -v python3.14 &> /dev/null; then
-    echo -e "${RED}Error: Python 3.14 is required but not found.${NC}"
-    echo -e "${YELLOW}Please install Python 3.14 or add it to your PATH.${NC}"
+PYTHON_CMD=""
+if command -v python3.14 &> /dev/null; then
+    PYTHON_CMD="python3.14"
+elif command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3 &> /dev/null && python3 -c 'import sys; exit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null; then
+    PYTHON_CMD="python3"
+fi
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${RED}Error: Python 3.13+ is required but not found.${NC}"
+    echo -e "${YELLOW}Please install Python 3.13 or 3.14, or add it to your PATH.${NC}"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3.14 --version 2>&1 | awk '{print $2}')
-echo -e "${GREEN}✓ Python version: $PYTHON_VERSION${NC}"
+PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
+echo -e "${GREEN}✓ Python version: $PYTHON_VERSION ($PYTHON_CMD)${NC}"
 
 # Step 2: Check Environment Variables
 echo ""
@@ -123,7 +132,7 @@ echo -e "${YELLOW}[3/4]${NC} Setting up virtual environment..."
 
 if [ ! -d ".venv" ]; then
     echo -e "${YELLOW}Creating new virtual environment at .venv...${NC}"
-    python3.14 -m venv .venv
+    $PYTHON_CMD -m venv .venv
     echo -e "${GREEN}✓ Virtual environment created${NC}"
 else
     echo -e "${GREEN}✓ Virtual environment already exists${NC}"
@@ -135,7 +144,7 @@ source .venv/bin/activate
 
 # Upgrade pip
 echo -e "${YELLOW}Upgrading pip...${NC}"
-python3.14 -m pip install --upgrade pip setuptools wheel 
+$PYTHON_CMD -m pip install --upgrade pip setuptools wheel 
 #pip install --upgrade pip setuptools wheel > /dev/null 2>&1
 
 # Install/update requirements

@@ -1122,9 +1122,11 @@
                     });
                 }
 
+                const basePath = window.location.pathname.startsWith('/kdr') ? '/kdr' : '';
+
                 async function fetchMarketIndexes() {
                     try {
-                        const res = await fetch('/api/market-indexes');
+                        const res = await fetch(`${basePath}/api/market-indexes`);
                         if (res.ok) {
                             const data = await res.json();
                             updateMarketIndexes(data);
@@ -1247,7 +1249,7 @@
 
                 function connectWebSocket() {
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const wsUrl = `${protocol}//${window.location.host}/ws`;
+                    const wsUrl = `${protocol}//${window.location.host}${basePath}/ws`;
 
                     ws = new WebSocket(wsUrl);
 
@@ -1422,7 +1424,7 @@
                 async function fetchSymbolData(symbol) {
                     try {
                         const duration = selectedDuration.value;
-                        const res = await fetch(`/api/symbols/${symbol}?duration=${duration}`);
+                        const res = await fetch(`${basePath}/api/symbols/${symbol}?duration=${duration}`);
                         if (res.ok) {
                             const detail = await res.json();
                             if (detail.ticks && detail.ticks.length) {
