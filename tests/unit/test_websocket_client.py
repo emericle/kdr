@@ -81,9 +81,9 @@ async def test_websocket_client_init_and_no_immediate_disconnect(ws_server):
         assert "marketIndexes" in init_data
         assert isinstance(init_data["market_indexes"], list)
         assert isinstance(init_data["marketIndexes"], list)
-        assert len(init_data["market_indexes"]) == 4
+        assert len(init_data["market_indexes"]) == 5
 
-        expected_indices = {"VIX", "DJIA", "SP500", "RUSSELL2000"}
+        expected_indices = {"VIX", "DJIA", "SP500", "NASDAQ", "RUSSELL2000"}
         received_indices = {item["index"] for item in init_data["market_indexes"]}
         assert expected_indices == received_indices
 
@@ -109,7 +109,7 @@ async def test_websocket_client_init_and_no_immediate_disconnect(ws_server):
         assert update_data.get("type") == "update"
         assert "market_indexes" in update_data
         assert "marketIndexes" in update_data
-        assert len(update_data["market_indexes"]) == 4
+        assert len(update_data["market_indexes"]) == 5
 
         # 6. Verify connection remains healthy and open over time
         await asyncio.sleep(1.5)
@@ -148,8 +148,8 @@ def test_market_index_rest_endpoints(ws_server):
     assert r_all.status_code == 200
     all_data = r_all.json()
     assert isinstance(all_data, list)
-    assert len(all_data) == 4
-    assert {item["index"] for item in all_data} == {"VIX", "DJIA", "SP500", "RUSSELL2000"}
+    assert len(all_data) == 5
+    assert {item["index"] for item in all_data} == {"VIX", "DJIA", "SP500", "NASDAQ", "RUSSELL2000"}
 
 
 def test_test_websocket_html_endpoint(ws_server):

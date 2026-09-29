@@ -2,8 +2,8 @@
 import os
 import json
 import logging
-from typing import List, Optional
-from datetime import datetime
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -207,8 +207,61 @@ class DatabaseManager:
         finally:
             self.connection.close(session)
 
+    def get_latest_price(self, symbol: str) -> Optional[float]:
+        """Retrieves the latest known price for a symbol."""
+        session = self.connection.get_session()
+        if not session:
+            return None
+        try:
+            latest = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper()
+            ).order_by(MarketDataModel.timestamp.desc()).first()
+            if latest:
+                return float(latest.close if latest.close is not None else latest.open or 0.0)
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving latest price for {symbol}: {e}")
+            return None
+        finally:
+            self.connection.close(session)
+
+    def get_latest_market_record(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Retrieves the latest market data record with full details."""
+        session = self.connection.get_session()
+        if not session:
+            return None
+        try:
+            latest = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper()
+            ).order_by(MarketDataModel.timestamp.desc()).first()
+            if latest:
+                ts = latest.timestamp
+                ts_val = ts.timestamp() if isinstance(ts, datetime) else ts
+                time_str = ts.strftime("%H:%M:%S") if isinstance(ts, datetime) else str(ts)
+                price = float(latest.close if latest.close is not None else latest.open or 0.0)
+                return {
+                    "symbol": latest.symbol,
+                    "price": price,
+                    "open": float(latest.open if latest.open is not None else price),
+                    "high": float(latest.high if latest.high is not None else price),
+                    "low": float(latest.low if latest.low is not None else price),
+                    "close": float(latest.close if latest.close is not None else price),
+                    "volume": float(latest.volume or 0.0),
+                    "timestamp": ts_val,
+                    "time_str": time_str
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving latest market record for {symbol}: {e}")
+            return None
+        finally:
+            self.connection.close(session)
+
     def get_price_at_interval_start(self, symbol: str, duration: str) -> Optional[float]:
         """Retrieves the price at the start of a time interval for percentage calculation.
+        
+        If markets were closed (e.g. weekend or after hours), the interval is anchored
+        to the latest available open market session so deltas remain meaningful.
 
         Args:
             symbol: The stock/crypto symbol
@@ -217,35 +270,74 @@ class DatabaseManager:
             Price at the start of the interval, or None if not found
         """
         now = datetime.now()
-        target_time = None
-
-        if duration == "1h":
-            target_time = now - timedelta(hours=1)
-        elif duration == "24h":
-            target_time = now - timedelta(hours=24)
-        elif duration == "5d":
-            target_time = now - timedelta(days=5)
-        elif duration == "30d":
-            target_time = now - timedelta(days=30)
-        elif duration == "1y":
-            target_time = now - timedelta(days=365)
-        elif duration == "ytd":
-            target_time = datetime(now.year, 1, 1)
-
-        if target_time is None:
-            return None
 
         session = self.connection.get_session()
         if not session:
             return None
         try:
+            # Query the latest record to anchor market-closed periods
+            latest = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper()
+            ).order_by(MarketDataModel.timestamp.desc()).first()
+
+            if not latest:
+                return None
+
+            latest_time = latest.timestamp if isinstance(latest.timestamp, datetime) else now
+            ref_end_time = now
+
+            if duration == "1h":
+                if (now - latest_time) > timedelta(hours=1):
+                    ref_end_time = latest_time
+                target_time = ref_end_time - timedelta(hours=1)
+            elif duration == "24h":
+                # If market was closed for > 24h (e.g., weekend), anchor to previous open session
+                if (now - latest_time) > timedelta(hours=24):
+                    ref_end_time = latest_time
+                target_time = ref_end_time - timedelta(hours=24)
+            elif duration == "5d":
+                if (now - latest_time) > timedelta(days=5):
+                    ref_end_time = latest_time
+                target_time = ref_end_time - timedelta(days=5)
+            elif duration == "30d":
+                if (now - latest_time) > timedelta(days=30):
+                    ref_end_time = latest_time
+                target_time = ref_end_time - timedelta(days=30)
+            elif duration == "1y":
+                if (now - latest_time) > timedelta(days=365):
+                    ref_end_time = latest_time
+                target_time = ref_end_time - timedelta(days=365)
+            elif duration == "ytd":
+                base_year = latest_time.year if (now - latest_time) > timedelta(days=365) else now.year
+                target_time = datetime(base_year, 1, 1)
+            else:
+                target_time = now - timedelta(hours=24)
+
+            # Query the record at or just after target_time up to ref_end_time
             query = session.query(MarketDataModel).filter(
                 MarketDataModel.symbol == symbol.upper(),
-                MarketDataModel.timestamp >= target_time
+                MarketDataModel.timestamp >= target_time,
+                MarketDataModel.timestamp <= ref_end_time
             ).order_by(MarketDataModel.timestamp.asc()).first()
 
             if query:
                 return float(query.open if query.open is not None else query.close or 0.0)
+
+            # If no record between target_time and ref_end_time, check for record right before target_time
+            prev = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper(),
+                MarketDataModel.timestamp < target_time
+            ).order_by(MarketDataModel.timestamp.desc()).first()
+            if prev:
+                return float(prev.close if prev.close is not None else prev.open or 0.0)
+
+            # Fallback to oldest record available
+            oldest = session.query(MarketDataModel).filter(
+                MarketDataModel.symbol == symbol.upper()
+            ).order_by(MarketDataModel.timestamp.asc()).first()
+            if oldest:
+                return float(oldest.open if oldest.open is not None else oldest.close or 0.0)
+
             return None
         except Exception as e:
             logger.error(f"Error retrieving price at interval start for {symbol} duration={duration}: {e}")

@@ -28,15 +28,17 @@ def market_buffer_reset():
     yield
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def mock_db_manager():
     """Create a mock DatabaseManager with interval price lookup capability."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.get_price_at_interval_start = MagicMock(return_value=150.0)
     mock_db.get_historical_market_data = MagicMock(return_value=[])
     mock_db.get_price_at_timestamp = MagicMock(return_value=150.0)
+    mock_db.get_latest_market_record = MagicMock(return_value=None)
     mock_db.get_model_weights = MagicMock(return_value=None)
-    return mock_db
+    with patch("src.web_server.get_db_manager", return_value=mock_db):
+        yield mock_db
 
 
 class TestIntervalAwarePriceChange:

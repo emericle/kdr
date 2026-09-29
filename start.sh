@@ -14,9 +14,52 @@ NC='\033[0m' # No Color
 
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-echo "SCRIPT_DIR=${SCRIPT_DIR}"
 cd "$SCRIPT_DIR"
 
+PID_FILE="${SCRIPT_DIR}/kdr.pid"
+
+# Function to stop the service
+stop_kdr() {
+    if [ -f "$PID_FILE" ]; then
+        local PID=$(cat "$PID_FILE")
+        if ps -p $PID > /dev/null 2>&1; then
+            echo -e "${YELLOW}Stopping KDR service (PID: $PID)...${NC}"
+            kill -TERM $PID 2>/dev/null || true
+            local count=0
+            while ps -p $PID > /dev/null 2>&1; do
+                sleep 1
+                count=$((count + 1))
+                if [ $count -ge 10 ]; then
+                    kill -KILL $PID 2>/dev/null || true
+                    break
+                fi
+            done
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    # Clean up any lingering scraper processes and listener on port 8001
+    local STALE_PIDS=$(pgrep -f "python.*src/scraper.py" 2>/dev/null || true)
+    if [ -n "$STALE_PIDS" ]; then
+        echo -e "${YELLOW}Cleaning up lingering scraper processes: $STALE_PIDS${NC}"
+        kill -9 $STALE_PIDS 2>/dev/null || true
+    fi
+
+    local PORT_PIDS=$(lsof -ti :8001 -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$PORT_PIDS" ]; then
+        echo -e "${YELLOW}Releasing port 8001 listener (PIDs: $PORT_PIDS)...${NC}"
+        kill -9 $PORT_PIDS 2>/dev/null || true
+    fi
+
+    echo -e "${GREEN}✓ KDR service stopped${NC}"
+}
+
+if [ "$1" == "stop" ]; then
+    stop_kdr
+    exit 0
+fi
+
+echo "SCRIPT_DIR=${SCRIPT_DIR}"
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║        KDR System Startup              ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
@@ -24,14 +67,23 @@ echo ""
 
 # Step 1: Check Python Version
 echo -e "${YELLOW}[1/4]${NC} Checking Python version..."
-if ! command -v python3.14 &> /dev/null; then
-    echo -e "${RED}Error: Python 3.14 is required but not found.${NC}"
-    echo -e "${YELLOW}Please install Python 3.14 or add it to your PATH.${NC}"
+PYTHON_CMD=""
+if command -v python3.14 &> /dev/null; then
+    PYTHON_CMD="python3.14"
+elif command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3 &> /dev/null && python3 -c 'import sys; exit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null; then
+    PYTHON_CMD="python3"
+fi
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${RED}Error: Python 3.13+ is required but not found.${NC}"
+    echo -e "${YELLOW}Please install Python 3.13 or 3.14, or add it to your PATH.${NC}"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3.14 --version 2>&1 | awk '{print $2}')
-echo -e "${GREEN}✓ Python version: $PYTHON_VERSION${NC}"
+PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
+echo -e "${GREEN}✓ Python version: $PYTHON_VERSION ($PYTHON_CMD)${NC}"
 
 # Step 2: Check Environment Variables
 echo ""
@@ -80,7 +132,7 @@ echo -e "${YELLOW}[3/4]${NC} Setting up virtual environment..."
 
 if [ ! -d ".venv" ]; then
     echo -e "${YELLOW}Creating new virtual environment at .venv...${NC}"
-    python3.14 -m venv .venv
+    $PYTHON_CMD -m venv .venv
     echo -e "${GREEN}✓ Virtual environment created${NC}"
 else
     echo -e "${GREEN}✓ Virtual environment already exists${NC}"
@@ -92,7 +144,7 @@ source .venv/bin/activate
 
 # Upgrade pip
 echo -e "${YELLOW}Upgrading pip...${NC}"
-python3.14 -m pip install --upgrade pip setuptools wheel 
+$PYTHON_CMD -m pip install --upgrade pip setuptools wheel 
 #pip install --upgrade pip setuptools wheel > /dev/null 2>&1
 
 # Install/update requirements
@@ -108,55 +160,7 @@ echo -e "${YELLOW}[4/4]${NC} Starting KDR service in background..."
 mkdir -p logs
 
 # Create PID file for process management
-PID_FILE="${SCRIPT_DIR}/kdr.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
-
-# Function to stop the service
-stop_kdr() {
-    if [ ! -f "$PID_FILE" ]; then
-        echo -e "${RED}✗ No KDR service is running${NC}"
-        exit 1
-    fi
-
-    local PID=$(cat "$PID_FILE")
-
-    if ! ps -p $PID > /dev/null 2>&1; then
-        echo -e "${RED}✗ Process $PID is not running${NC}"
-        rm -f "$PID_FILE"
-        exit 1
-    fi
-
-    echo -e "${YELLOW}Stopping KDR service (PID: $PID)...${NC}"
-    kill -TERM $PID
-
-    # Wait for process to terminate
-    local count=0
-    while ps -p $PID > /dev/null 2>&1; do
-        sleep 1
-        count=$((count + 1))
-        if [ $count -ge 30 ]; then
-            echo -e "${RED}✗ Process did not terminate gracefully${NC}"
-            kill -KILL $PID
-            sleep 2
-            break
-        fi
-    done
-
-    rm -f "$PID_FILE"
-
-    if ps -p $PID > /dev/null 2>&1; then
-        echo -e "${RED}✗ Failed to stop KDR service${NC}"
-        exit 1
-    else
-        echo -e "${GREEN}✓ KDR service stopped${NC}"
-    fi
-}
-
-# Parse command line arguments
-if [ "$1" == "stop" ]; then
-    stop_kdr
-    exit 0
-fi
 
 # Parse arguments for the main process
 ARGS=()
