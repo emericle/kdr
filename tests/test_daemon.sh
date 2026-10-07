@@ -5,8 +5,20 @@
 
 set -e
 
+# Determine script and project root directories
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+if [ -f "${SCRIPT_DIR}/daemon.sh" ]; then
+    PROJECT_ROOT="${SCRIPT_DIR}"
+elif [ -f "${SCRIPT_DIR}/../daemon.sh" ]; then
+    PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
+else
+    PROJECT_ROOT="$(pwd)"
+fi
+
+cd "$PROJECT_ROOT"
+
+PID_FILE="${PROJECT_ROOT}/kdr.pid"
+LOG_DIR="${PROJECT_ROOT}/logs"
 
 # Colors
 GREEN='\033[0;32m'
@@ -43,7 +55,6 @@ sleep 3
 
 # Test 3: Verify process is running
 echo -e "${YELLOW}[TEST 3]${NC} Verifying process is running..."
-PID_FILE="${SCRIPT_DIR}/kdr.pid"
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if ps -p $PID > /dev/null 2>&1; then
@@ -59,7 +70,6 @@ fi
 
 # Test 4: Verify log file was created
 echo -e "${YELLOW}[TEST 4]${NC} Verifying log file creation..."
-LOG_DIR="${SCRIPT_DIR}/logs"
 if ls $LOG_DIR/*.log 1> /dev/null 2>&1; then
     LATEST_LOG=$(ls -t $LOG_DIR/*.log | head -1)
     if [ -f "$LATEST_LOG" ]; then

@@ -100,6 +100,8 @@ stop_daemon() {
         kill -9 $PORT_PIDS 2>/dev/null || true
     fi
 
+    rm -f "$PID_FILE"
+
     echo "✓ KDR service stopped successfully"
 }
 

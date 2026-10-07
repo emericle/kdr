@@ -92,7 +92,7 @@ Check environment variables and system readiness:
 python check_env.py
 
 # Run pre-flight startup validations
-python test_startup.py
+./tests/test_startup.sh
 ```
 
 ---
