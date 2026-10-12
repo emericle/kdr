@@ -6,6 +6,8 @@ import threading
 from unittest.mock import MagicMock, patch
 from unittest.mock import MagicMock as Mock
 
+import pytest
+
 from src.scraper import (
     AlpacaStreamProcessor,
     DataStreamBuffer,
@@ -1029,6 +1031,25 @@ class TestRunWorkerThreads:
             assert "TSLA" in put_symbols
             assert "GOOGL" in put_symbols
 
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.DBWriterWorker')
+    @patch('src.db_writer.DatabaseManager')
+    @patch('src.db_writer.load_value_function')
+    def test_run_worker_threads_starts_the_model_from_stored_weights(
+        self, mock_load, mock_db_class, mock_writer_class, mock_validate
+    ):
+        """The pipeline asks the persisted weights before it asks the market."""
+        mock_db = MagicMock()
+        mock_db.connection = MagicMock()
+        mock_db_class.return_value = mock_db
+        mock_validate.return_value = None
+        mock_writer_class.return_value = MagicMock()
+
+        run_worker_threads(symbols=["AAPL", "TSLA"], continuous=False, mock_fallback=True)
+
+        assert mock_load.called
+        assert mock_load.call_args.args[1] == ["AAPL", "TSLA"]
+
 
 class TestCLIArgs:
     """Tests for parse_args CLI handling."""
@@ -1261,3 +1282,109 @@ class TestAlpacaStreamProcessorEdgeCases:
         assert payload['price'] == 65000.5
         assert payload['size'] == 0.125
         assert payload['close'] is None
+
+
+class TestLiveDecisionPath:
+    """The dashboard's decision for a bar comes from the model, when there is one to ask."""
+
+    def test_build_decision_state_carries_the_bar_and_the_portfolio(self):
+        """The state the model scores names the symbol, the price it saw and what is held."""
+        from src.state_mapper import StateMapper
+
+        mapper = StateMapper()
+        state = mapper.build_decision_state(
+            symbol="AAPL",
+            price=150.0,
+            previous_price=100.0,
+            sentiment_score=0.75,
+            cash=1000.0,
+            holdings={"AAPL": 2.0},
+        )
+        assert state.market.prices["AAPL"] == 150.0
+        assert state.market.previous_prices["AAPL"] == 100.0
+        assert state.market.sentiment_scores["AAPL"] == 0.75
+        assert state.portfolio.cash == 1000.0
+        assert state.portfolio.holdings == {"AAPL": 2.0}
+        assert len(state.to_vector(["AAPL"])) == 4
+
+    def test_build_decision_state_invents_nothing(self):
+        """No previous price means no change, and no Adanos score means neutral sentiment."""
+        from src.state_mapper import StateMapper
+
+        state = StateMapper().build_decision_state(symbol="AAPL", price=150.0)
+        assert state.market.previous_prices["AAPL"] == 150.0
+        assert state.market.sentiment_scores["AAPL"] == 0.5
+        assert state.portfolio.cash == 0.0
+        assert state.portfolio.holdings == {}
+
+    def test_build_decision_state_refuses_a_price_that_cannot_be_sized(self):
+        """A zero price makes the log change and the share count undefined."""
+        from src.state_mapper import StateMapper
+
+        with pytest.raises(ValueError, match="non-positive price"):
+            StateMapper().build_decision_state(symbol="AAPL", price=0.0)
+
+    def test_recommendation_asks_the_model_when_an_executor_is_attached(self):
+        """With a model attached the writer reports the argmax, not a momentum guess."""
+        from src.state_mapper import StateMapper
+        from src.trading_execution import TradingExecutor
+
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=150.0, previous_price=100.0, cash=1000.0
+        )
+        worker = DBWriterWorker(MagicMock(), MagicMock(), queue.Queue(), executor=executor)
+
+        rec = worker._recommendation("AAPL", state)
+        assert rec["action"] == "BUY"
+        assert any("Bellman argmax" in line for line in rec["reasoning"])
+
+    def test_recommendation_falls_back_to_the_heuristic_without_an_executor(self):
+        """A writer built on its own keeps the recommendation the dashboard always showed."""
+        from src.web_server import compute_recommendation
+
+        worker = DBWriterWorker(MagicMock(), MagicMock(), queue.Queue())
+        heuristic = compute_recommendation("AAPL")
+        rec = worker._recommendation("AAPL", None)
+        assert rec["action"] == heuristic["action"]
+        assert rec["confidence"] == heuristic["confidence"]
+        assert rec["reasoning"] == heuristic["reasoning"]
+
+    def test_map_bar_asks_the_model_about_the_bar_it_is_mapping(self):
+        """The state handed to the model is the bar: close against open, plus the portfolio."""
+        from src.trading_execution import TradingExecutor
+
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        mapper = MagicMock()
+        worker = DBWriterWorker(MagicMock(), mapper, queue.Queue(), executor=executor)
+        bar = {
+            "symbol": "AAPL",
+            "close": 151.0,
+            "open": 150.0,
+            "volume": 100.0,
+            "timestamp": datetime.datetime(2023, 1, 1, 12, 0),
+        }
+
+        worker._map_bar("AAPL", bar)
+
+        mapper.build_decision_state.assert_called_once()
+        handed = mapper.build_decision_state.call_args.kwargs
+        assert handed["price"] == 151.0
+        assert handed["previous_price"] == 150.0
+        assert handed["cash"] == 100_000.0
+        assert handed["holdings"] == {}
+
+    def test_map_bar_leaves_the_heuristic_in_place_without_a_model(self):
+        """No executor means no state to score; the dashboard still gets a recommendation."""
+        mapper = MagicMock()
+        worker = DBWriterWorker(MagicMock(), mapper, queue.Queue())
+        bar = {
+            "symbol": "AAPL",
+            "close": 151.0,
+            "open": 150.0,
+            "volume": 100.0,
+            "timestamp": datetime.datetime(2023, 1, 1, 12, 0),
+        }
+
+        worker._map_bar("AAPL", bar)
+        mapper.build_decision_state.assert_not_called()

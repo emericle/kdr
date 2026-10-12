@@ -10,7 +10,11 @@ Run it with::
     BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest
 
 ``BACKTEST_SYMBOLS`` is required; ``BACKTEST_CASH`` (default 100000) and
-``BACKTEST_MINUTES`` (default 1440) are optional.
+``BACKTEST_MINUTES`` (default 1440) are optional. ``BACKTEST_TRAIN_EPOCHS``
+(default 0) additionally fits the value function to the same history and stores
+the weights in the ``model_weights`` table, which is what the live path loads::
+
+    BACKTEST_SYMBOLS=AAPL,TSLA BACKTEST_TRAIN_EPOCHS=3 python -m src.backtest
 """
 from __future__ import annotations
 
@@ -24,73 +28,13 @@ import numpy as np
 from src.database import DatabaseManager
 from src.domain import Action, FullState, MarketState, PortfolioState, candidate_actions
 from src.logging_config import configure_logging
-from src.model import BellmanEngine, LinearValueFunction
+from src.model import POSITION_WEIGHT, BellmanEngine, LinearValueFunction, RLTrainer, portfolio_transition
 from src.sentiment_adapter import AdanosDataAdapter, get_adanos_api_key
 from src.times import from_epoch, now_utc
 
 logger = logging.getLogger(__name__)
 
-POSITION_WEIGHT = 0.25
 NEUTRAL_SENTIMENT = 0.5
-
-
-def _transition(
-    action: Action,
-    state: FullState,
-    position_weight: float = POSITION_WEIGHT,
-) -> tuple[float, FullState]:
-    """Apply one action to one state and report the reward that produced it.
-
-    Reward is the signed price change the agent captured: buying a bar that rose
-    is positive, selling a bar that fell is positive, holding is always zero. The
-    successor carries the prices this step observed as its previous prices, so the
-    next bar's change is measured against them.
-
-    Args:
-        action: The movement to apply.
-        state: The state the action is applied to.
-        position_weight: Fraction of available cash a BUY spends, and of portfolio
-            value a SELL releases.
-
-    Returns:
-        The immediate reward and the state that follows.
-    """
-    symbol = action.symbol
-    if symbol is None:
-        raise ValueError("transition requires an action that names a symbol")
-    price = state.market.prices[symbol]
-    previous = state.market.previous_prices.get(symbol, price)
-    change = price - previous
-    if action.movement == "BUY":
-        reward = change
-    elif action.movement == "SELL":
-        reward = -change
-    else:
-        reward = 0.0
-
-    holdings = dict(state.portfolio.holdings)
-    cash = state.portfolio.cash
-    held = holdings.get(symbol, 0.0)
-    if action.movement == "BUY" and price > 0:
-        quantity = (cash * position_weight) / price
-        holdings[symbol] = held + quantity
-        cash -= quantity * price
-    elif action.movement == "SELL" and held > 0:
-        quantity = held if price <= 0 else min(held, (state.portfolio_value() * position_weight) / price)
-        holdings[symbol] = held - quantity
-        cash += quantity * price
-    if cash <= 0:
-        holdings = {s: q for s, q in holdings.items() if q > 0}
-
-    next_market = MarketState(
-        prices=dict(state.market.prices),
-        previous_prices={s: state.market.prices[s] for s in state.symbols},
-        sentiment_scores=dict(state.market.sentiment_scores),
-        sentiment_min=state.market.sentiment_min,
-        sentiment_max=state.market.sentiment_max,
-    )
-    next_portfolio = PortfolioState(cash=max(cash, 0.0), holdings=holdings)
-    return reward, FullState(market=next_market, portfolio=next_portfolio, timestamp=state.timestamp)
 
 
 class Backtester:
@@ -126,19 +70,23 @@ class Backtester:
             return NEUTRAL_SENTIMENT
         return float(records[-1].get("score", NEUTRAL_SENTIMENT))
 
-    def run(self, minutes: int = 1_440) -> dict:
-        """Replay the last ``minutes`` of bars for every configured symbol.
+    def replay(
+        self,
+        minutes: int = 1_440
+    ) -> tuple[list[dict], list[tuple[np.ndarray, float, np.ndarray]]]:
+        """Walk the last ``minutes`` of bars for every symbol through the decision model.
 
         Returns:
-            A report with the number of decisions, the starting and ending value
-            of the paper portfolio, the return, the mean reward, and one entry
-            per decision.
+            The decisions (one entry per bar: the timestamp, the symbol, the
+            movement chosen, the reward it captured and the portfolio value after
+            it) and the transitions (the ``(state vector, reward, next state
+            vector)`` triples a training step fits). One walk answers both
+            questions, so the report and the training pass cannot drift apart.
         """
         bars_by_symbol = {s: self.load_bars(s, minutes) for s in self.symbols}
         bar_times = sorted({b["timestamp"] for bars in bars_by_symbol.values() for b in bars})
         if not bar_times:
-            return {"steps": 0, "initial_value": self.initial_cash, "final_value": self.initial_cash,
-                    "return": 0.0, "mean_reward": 0.0, "decisions": []}
+            return [], []
 
         prices: dict[str, float] = {}
         previous_prices: dict[str, float] = {}
@@ -148,8 +96,7 @@ class Backtester:
                 prices[s] = bars[0]["close"]
                 previous_prices[s] = bars[0]["close"]
         if not prices:
-            return {"steps": 0, "initial_value": self.initial_cash, "final_value": self.initial_cash,
-                    "return": 0.0, "mean_reward": 0.0, "decisions": []}
+            return [], []
 
         state = FullState(
             market=MarketState(
@@ -161,10 +108,11 @@ class Backtester:
             timestamp=from_epoch(min(bar_times)),
         )
 
-        def transition(action: Action, state: FullState) -> tuple[float, FullState]:
-            return _transition(action, state, self.position_weight)
+        def step(action: Action, current: FullState) -> tuple[float, FullState]:
+            return portfolio_transition(action, current, self.position_weight)
+
         decisions: list[dict] = []
-        rewards: list[float] = []
+        transitions: list[tuple[np.ndarray, float, np.ndarray]] = []
         for t in bar_times:
             for symbol in self.symbols:
                 bar = next((b for b in bars_by_symbol[symbol] if b["timestamp"] == t), None)
@@ -172,9 +120,12 @@ class Backtester:
                     continue
                 state.market.prices[symbol] = bar["close"]
                 candidates = candidate_actions([symbol], {})
-                action = self.engine.compute_action(state, state.symbols, candidates, transition, self.value_fn.predict)
-                reward, state = transition(action, state)
-                rewards.append(reward)
+                vector = state.to_vector(state.symbols)
+                action = self.engine.compute_action(
+                    state, state.symbols, candidates, step, self.value_fn.predict
+                )
+                reward, state = step(action, state)
+                transitions.append((vector, reward, state.to_vector(state.symbols)))
                 decisions.append(
                     {
                         "timestamp": t,
@@ -184,8 +135,19 @@ class Backtester:
                         "portfolio_value": state.portfolio_value(),
                     }
                 )
+        return decisions, transitions
 
-        final_value = state.portfolio_value()
+    def run(self, minutes: int = 1_440) -> dict:
+        """Replay the last ``minutes`` of bars as a paper portfolio.
+
+        Returns:
+            A report with the number of decisions, the starting and ending value
+            of the paper portfolio, the return, the mean reward, and one entry
+            per decision.
+        """
+        decisions, transitions = self.replay(minutes)
+        rewards = [reward for _, reward, _ in transitions]
+        final_value = decisions[-1]["portfolio_value"] if decisions else self.initial_cash
         return {
             "steps": len(rewards),
             "initial_value": self.initial_cash,
@@ -193,6 +155,29 @@ class Backtester:
             "return": final_value - self.initial_cash,
             "mean_reward": float(np.mean(rewards)) if rewards else 0.0,
             "decisions": decisions,
+        }
+
+    def train(self, trainer: RLTrainer, minutes: int = 1_440, epochs: int = 1) -> dict:
+        """Fit the value function to the last ``minutes`` of bars.
+
+        Each epoch replays the same history with the weights the previous epoch
+        produced, so the transition a step learns from is the one the current
+        policy took — the on-policy assumption TD(0) makes.
+
+        Returns:
+            A report with the epochs run, the steps applied and the mean reward
+            of the last epoch.
+        """
+        steps = 0
+        rewards: list[float] = []
+        for _ in range(epochs):
+            _decisions, transitions = self.replay(minutes)
+            steps += trainer.fit(transitions)
+            rewards = [reward for _, reward, _ in transitions]
+        return {
+            "epochs": epochs,
+            "steps": steps,
+            "mean_reward": float(np.mean(rewards)) if rewards else 0.0,
         }
 
 
@@ -205,7 +190,12 @@ def summarize(report: dict) -> str:
 
 
 def main() -> None:
-    """Run a backtest from the command line using DATABASE_URL and BACKTEST_*."""
+    """Run a backtest, and optionally a training pass, from the command line.
+
+    ``BACKTEST_TRAIN_EPOCHS`` (default 0) also fits the value function to the
+    same history and stores the weights in the ``model_weights`` table under the
+    symbol list the vector covers, which is what the live path loads.
+    """
     configure_logging()
     symbols = [s.strip() for s in os.environ.get("BACKTEST_SYMBOLS", "").split(",") if s.strip()]
     if not symbols:
@@ -213,16 +203,31 @@ def main() -> None:
         return
     cash = float(os.environ.get("BACKTEST_CASH", "100000"))
     minutes = int(os.environ.get("BACKTEST_MINUTES", "1440"))
+    epochs = int(os.environ.get("BACKTEST_TRAIN_EPOCHS", "0"))
+
     db_manager = DatabaseManager()
-    report = Backtester(
+    value_fn = LinearValueFunction()
+    backtester = Backtester(
         db_manager,
         symbols,
         BellmanEngine(),
-        LinearValueFunction(),
+        value_fn,
         initial_cash=cash,
-    ).run(minutes=minutes)
+    )
+    report = backtester.run(minutes=minutes)
     logger.info("Backtest: %s", summarize(report))
     print(json.dumps(report, indent=2, default=str))
+
+    if epochs <= 0:
+        return
+
+    trained = backtester.train(RLTrainer(BellmanEngine(), value_fn), minutes=minutes, epochs=epochs)
+    key = ",".join(symbols)
+    if db_manager.save_model_weights(key, value_fn.to_dict()):
+        logger.info("Trained %s steps over %s; weights stored for %s", trained["steps"], key, key)
+    else:
+        logger.warning("No database to store the trained weights in")
+    print(json.dumps(trained, indent=2, default=str))
 
 
 if __name__ == "__main__":

@@ -3,10 +3,13 @@ import logging
 import queue
 import threading
 import time
+from typing import Any
 
 from src.config_gatekeeper import validate_configs
 from src.database import DB_FAILURES, DatabaseManager
+from src.domain import FullState
 from src.logging_config import is_debug
+from src.model import load_value_function
 from src.state_mapper import StateMapper
 from src.stream_client import AlpacaStreamProcessor
 from src.symbols import (
@@ -14,6 +17,7 @@ from src.symbols import (
     normalize_symbols,
 )
 from src.times import now_utc
+from src.trading_execution import AlpacaClient, TradingExecutor
 
 logger = logging.getLogger("DataIngestion")
 
@@ -51,7 +55,8 @@ class DBWriterWorker(threading.Thread):
         db_manager: DatabaseManager,
         state_mapper: StateMapper,
         data_queue: queue.Queue,
-        batch_size: int = 50
+        batch_size: int = 50,
+        executor: TradingExecutor | None = None,
     ):
         super().__init__(daemon=True)
         self.db_manager = db_manager
@@ -59,6 +64,10 @@ class DBWriterWorker(threading.Thread):
         self.queue = data_queue
         self.running = True
         self.batch_size = batch_size
+        # The model the live path decides with. It is optional because a writer
+        # can be built on its own (a test, a notebook); without it the dashboard
+        # falls back to the heuristic recommendation rather than going blank.
+        self.executor = executor
 
     def _drain_batch(self) -> list | None:
         """Pull one batch off the queue.
@@ -86,6 +95,38 @@ class DBWriterWorker(threading.Thread):
             batch.append(next_item)
         return batch
 
+    def _recommendation(self, symbol: str, state: FullState | None) -> dict[str, Any]:
+        """The decision the dashboard shows for one bar.
+
+        With an executor attached the answer is the Bellman argmax over the
+        symbol's action space, which is the decision the spec asks for. Without
+        one (a writer built on its own, in a test or a notebook) the dashboard
+        keeps the heuristic recommendation it has always shown, so the split
+        between "model decides" and "no model to ask" is visible rather than a
+        blank chart.
+
+        Args:
+            symbol: The symbol the bar belongs to.
+            state: The state to score, or ``None`` when there is no executor.
+
+        Returns:
+            A dict with ``action``, ``confidence`` and ``reasoning``.
+        """
+        if self.executor is None or state is None:
+            return compute_recommendation(symbol)
+
+        _action, report = self.executor.decide(state)
+        return {
+            "symbol": symbol,
+            "action": report["action"],
+            "confidence": report["confidence"],
+            "reasoning": [
+                f"Bellman argmax over {len(report['values'])} candidates",
+                f"Q-value {report['score']:+.4f}",
+                f"Margin over runner-up: {report['confidence'] - 0.5:+.2f} of the spread",
+            ],
+        }
+
     def _map_bar(self, symbol: str, bar_data: dict) -> None:
         """Attach one bar to the domain state and push its recommendation to the dashboard."""
         logger.info("Processing %s at %s", symbol, bar_data['timestamp'])
@@ -98,7 +139,16 @@ class DBWriterWorker(threading.Thread):
             }
             self.state_mapper.map_tick_data_to_state([tick_data])
             if WEB_SERVER_AVAILABLE and decision_buffer:
-                rec = compute_recommendation(symbol)
+                state = None
+                if self.executor is not None:
+                    state = self.state_mapper.build_decision_state(
+                        symbol=symbol,
+                        price=bar_data['close'],
+                        previous_price=bar_data.get('open'),
+                        cash=self.executor.cash,
+                        holdings=self.executor.order_tracker.get_positions(),
+                    )
+                rec = self._recommendation(symbol, state)
                 decision_buffer.add_decision(
                     symbol=symbol,
                     action=rec["action"],
@@ -271,12 +321,21 @@ def run_worker_threads(
     logger.info("Database initialization complete: %s", db_manager.connection.engine)
 
     data_queue: queue.Queue = queue.Queue()
-    writer = DBWriterWorker(db_manager, state_mapper, data_queue)
-    writer.start()
-    logger.info("Producer and Consumer threads initialized.")
-    logger.info("Data pipeline ready: Alpaca → Adapter → Domain State → DB")
 
     resolved_symbols = normalize_symbols(symbols, default=DEFAULT_SYMBOLS)
+
+    # The pipeline asks this executor to decide, never to execute: nothing here
+    # calls execute_decision, so no order reaches the broker. The client exists so
+    # the executor is the same object the live trading path would use, and the
+    # cash it carries is what the next decision is scored against. Its value
+    # function is the one a previous training pass stored for these symbols; with
+    # nothing stored yet it starts untrained, which scores on the immediate reward.
+    executor = TradingExecutor(AlpacaClient(), value_function=load_value_function(db_manager, resolved_symbols))
+    writer = DBWriterWorker(db_manager, state_mapper, data_queue, executor=executor)
+    writer.start()
+    logger.info("Producer and Consumer threads initialized.")
+    logger.info("Data pipeline ready: Alpaca → Adapter → Domain State → Bellman → DB")
+
     _start_dashboard(db_manager, resolved_symbols)
 
     processor = AlpacaStreamProcessor(
