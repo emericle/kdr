@@ -179,10 +179,11 @@ pytest tests/ --cov=src --cov-report=term-missing
 ## Directory Structure
 
 ```text
-├── bin/                 # Local process management scripts (local-start.sh, local-stop.sh)
+├── bin/                 # Process management and deployment scripts (start.sh, daemon.sh, deploy_rpi4.sh)
 ├── docs/                # Architecture, deployment, and specification documentation
 │   ├── architecture.md  # Detailed system architecture and component designs
 │   ├── deployment.md    # Nginx reverse proxy and Cloudflare Tunnel setup
+│   ├── plans/           # Work-in-progress improvement plans and TODO checklists
 │   └── specs/           # Feature specifications (Bellman decision model)
 ├── src/                 # Core engine source code
 │   ├── domain.py        # Pydantic schemas (MarketState, PortfolioState, Action)
@@ -199,7 +200,6 @@ pytest tests/ --cov=src --cov-report=term-missing
 │   ├── integration_tests.py # Full pipeline integration tests
 │   └── unit/            # Component unit tests
 ├── requirements.txt     # Python package dependencies
-├── start.sh / start.bat # Cross-platform automated startup scripts
 └── AGENTS.md            # Agent instructions and context guidelines
 ```
 
@@ -210,3 +210,5 @@ pytest tests/ --cov=src --cov-report=term-missing
 - [System Architecture](docs/architecture.md): In-depth component workflows and performance design.
 - [Deployment Guide](docs/deployment.md): Instructions for Nginx reverse proxy and Cloudflare Tunnel deployments.
 - [Bellman Decision Spec](docs/specs/bellman_decision.md): Mathematical and functional specification for the core model.
+- [Improvement Plan](docs/plans/2026-10-11-improvements-plan.md): Review findings and phased fix plan.
+- [TODO Checklist](docs/plans/2026-10-11-todo.md): Actionable list tracking each planned fix.
