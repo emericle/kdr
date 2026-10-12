@@ -1,8 +1,8 @@
-import pytest
 import os
 import tempfile
 from datetime import datetime
-from unittest.mock import MagicMock
+
+import pytest
 
 
 class TestCSVReporter:
@@ -37,7 +37,7 @@ class TestCSVReporter:
             result_path = reporter.generate_report(data, out_file)
             assert os.path.exists(result_path)
 
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 content = f.read()
             assert "symbol" in content
             assert "AAPL" in content
@@ -60,7 +60,7 @@ class TestChartGenerator:
             path = generator.create_portfolio_chart(history, out_file)
             assert os.path.exists(path)
 
-            with open(path, "r") as f:
+            with open(path) as f:
                 html = f.read()
             assert "plotly" in html.lower()
 
@@ -172,6 +172,7 @@ class TestReportingCoverageAdditions:
     def test_chart_generator_plotly_importerror_fallback(self):
         import sys
         from unittest.mock import patch
+
         from src.reporting import ChartGenerator
 
         cg = ChartGenerator()

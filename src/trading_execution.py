@@ -1,12 +1,20 @@
-import os
 import logging
-from datetime import datetime, timezone
-from src.times import now_utc
+import os
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, List
+from typing import Any
+
 import requests
 
+from src.times import now_utc
+
 logger = logging.getLogger("TradingExecution")
+
+# What a broker round trip can fail with: a transport or HTTP error, a body that
+# is not JSON, and the field conversions this file does on the parsed payload.
+BROKER_FAILURES = (requests.RequestException, ValueError, TypeError, KeyError, AttributeError)
+
+# A dashboard push is best effort: the buffer is a singleton that may be absent.
+BUFFER_FAILURES = (AttributeError, TypeError, ValueError, KeyError)
 
 # Import web_server for decision streaming
 try:
@@ -91,7 +99,7 @@ class RiskManager:
         cash: float,
         portfolio_value: float,
         current_shares: int = 0
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Validates and adjusts an order based on risk limits.
 
@@ -126,10 +134,14 @@ class RiskManager:
             return {
                 "approved": True,
                 "adjusted_shares": adjusted_shares,
-                "reason": "Order approved" if adjusted_shares == shares else "Shares adjusted down to comply with risk limits"
+                "reason": (
+                    "Order approved"
+                    if adjusted_shares == shares
+                    else "Shares adjusted down to comply with risk limits"
+                )
             }
 
-        elif normalized_side == "sell":
+        if normalized_side == "sell":
             if current_shares <= 0:
                 return {
                     "approved": False,
@@ -144,19 +156,18 @@ class RiskManager:
                 "reason": "Order approved" if adjusted_shares == shares else "Shares adjusted down to existing holdings"
             }
 
-        else:
-            return {
-                "approved": False,
-                "adjusted_shares": 0,
-                "reason": f"Unsupported order side: {side}"
-            }
+        return {
+            "approved": False,
+            "adjusted_shares": 0,
+            "reason": f"Unsupported order side: {side}"
+        }
 
 
 class OrderValidator:
     """Validates trade orders before routing to execution."""
 
     @staticmethod
-    def validate_order(order: Dict[str, Any]) -> bool:
+    def validate_order(order: dict[str, Any]) -> bool:
         if not isinstance(order, dict):
             return False
 
@@ -171,21 +182,18 @@ class OrderValidator:
         side = order.get("side")
         if not side or not isinstance(side, str):
             return False
-        if side.lower() not in ("buy", "sell"):
-            return False
-
-        return True
+        return side.lower() in ("buy", "sell")
 
 
 class OrderTracker:
     """Maintains in-memory log of executed orders and tracks net positions in O(1)."""
 
     def __init__(self, max_history: int = 10000):
-        self._history: List[Dict[str, Any]] = []
-        self._positions: Dict[str, float] = {}
+        self._history: list[dict[str, Any]] = []
+        self._positions: dict[str, float] = {}
         self.max_history = max_history
 
-    def record_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
+    def record_order(self, order: dict[str, Any]) -> dict[str, Any]:
         record = dict(order)
         if "timestamp" not in record:
             record["timestamp"] = now_utc()
@@ -208,12 +216,12 @@ class OrderTracker:
 
         return record
 
-    def get_order_history(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_order_history(self, symbol: str | None = None) -> list[dict[str, Any]]:
         if symbol is None:
             return list(self._history)
         return [o for o in self._history if o.get("symbol") == symbol]
 
-    def get_positions(self) -> Dict[str, float]:
+    def get_positions(self) -> dict[str, float]:
         """Returns current net positions in O(1) time complexity."""
         return dict(self._positions)
 
@@ -236,7 +244,7 @@ class OrderRecord:
     side: str
     order_type: str
     status: str
-    price: Optional[float] = None
+    price: float | None = None
 
 
 class AlpacaClient:
@@ -247,10 +255,10 @@ class AlpacaClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
-        base_url: Optional[str] = None,
-        session: Optional[requests.Session] = None
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        base_url: str | None = None,
+        session: requests.Session | None = None
     ):
         self.api_key: str = api_key or os.getenv("ALPACA_API_KEY") or ""
         self.api_secret: str = api_secret or os.getenv("ALPACA_SECRET_KEY") or ""
@@ -259,7 +267,7 @@ class AlpacaClient:
         self.session: requests.Session = session or requests.Session()
         self.session.headers.update(self._headers())
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "APCA-API-KEY-ID": self.api_key,
             "APCA-API-SECRET-KEY": self.api_secret,
@@ -273,10 +281,10 @@ class AlpacaClient:
         side: str,
         order_type: str = "market",
         time_in_force: str = "day",
-        limit_price: Optional[float] = None
+        limit_price: float | None = None
     ) -> OrderRecord:
         url = f"{self.base_url}/orders"
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "symbol": symbol,
             "qty": str(quantity),
             "side": side.lower(),
@@ -300,18 +308,17 @@ class AlpacaClient:
                     status=data.get("status", "submitted"),
                     price=float(data["filled_avg_price"]) if data.get("filled_avg_price") else limit_price
                 )
-            else:
-                logger.error(f"Alpaca submit_order failed [{resp.status_code}]: {resp.text}")
-                return OrderRecord(
-                    id="",
-                    symbol=symbol,
-                    quantity=float(quantity),
-                    filled_qty=0.0,
-                    side=side.lower(),
-                    order_type=order_type,
-                    status=f"rejected: {resp.status_code}"
-                )
-        except Exception as e:
+            logger.error(f"Alpaca submit_order failed [{resp.status_code}]: {resp.text}")
+            return OrderRecord(
+                id="",
+                symbol=symbol,
+                quantity=float(quantity),
+                filled_qty=0.0,
+                side=side.lower(),
+                order_type=order_type,
+                status=f"rejected: {resp.status_code}"
+            )
+        except BROKER_FAILURES as e:
             logger.error(f"Error submitting order to Alpaca: {e}")
             return OrderRecord(
                 id="",
@@ -323,25 +330,25 @@ class AlpacaClient:
                 status=f"error: {str(e)}"
             )
 
-    def get_account(self) -> Dict[str, Any]:
+    def get_account(self) -> dict[str, Any]:
         url = f"{self.base_url}/account"
         try:
             resp = self.session.get(url, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return {}
-        except Exception as e:
+        except BROKER_FAILURES as e:
             logger.error(f"Error getting account from Alpaca: {e}")
             return {}
 
-    def get_positions(self) -> List[Dict[str, Any]]:
+    def get_positions(self) -> list[dict[str, Any]]:
         url = f"{self.base_url}/positions"
         try:
             resp = self.session.get(url, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return []
-        except Exception as e:
+        except BROKER_FAILURES as e:
             logger.error(f"Error getting positions from Alpaca: {e}")
             return []
 
@@ -354,14 +361,125 @@ class TradingExecutor:
     def __init__(
         self,
         alpaca_client: AlpacaClient,
-        risk_manager: Optional[RiskManager] = None,
-        order_tracker: Optional[OrderTracker] = None,
-        order_validator: Optional[OrderValidator] = None
+        risk_manager: RiskManager | None = None,
+        order_tracker: OrderTracker | None = None,
+        order_validator: OrderValidator | None = None
     ):
         self.alpaca_client = alpaca_client
         self.risk_manager = risk_manager or RiskManager()
         self.order_tracker = order_tracker or OrderTracker()
         self.order_validator = order_validator or OrderValidator()
+
+    def _movement_of(self, action: Any) -> str | None:
+        """The trade movement as an uppercase string, however the action carries it."""
+        if hasattr(action, "movement") and action.movement is not None:
+            return str(action.movement.value if hasattr(action.movement, "value") else action.movement).upper()
+        if hasattr(action, "value"):
+            return str(action.value).upper()
+        if isinstance(action, str):
+            return action.upper()
+        return None
+
+    def _push_decision(self, symbol: str, action: str, confidence: float, reasoning: list[str]) -> None:
+        """Tell the dashboard about a decision. A missing dashboard is not an error."""
+        if not (WEB_SERVER_AVAILABLE and decision_buffer):
+            return
+        try:
+            from src.web_server import TradingDecision
+            decision_buffer.add_decision(TradingDecision(
+                symbol=symbol,
+                action=action,
+                confidence=confidence,
+                reasoning=reasoning,
+                timestamp=now_utc()
+            ))
+        except BUFFER_FAILURES as e:
+            logger.debug(f"Error pushing decision to buffer: {e}")
+
+    def _translate_buy(
+        self,
+        symbol: str,
+        current_price: float,
+        portfolio_cash: float,
+        current_shares: int,
+        total_value: float,
+        win_rate: float,
+        win_loss_ratio: float
+    ) -> dict[str, Any] | None:
+        """Size a BUY with Kelly, let the risk manager cut it down, and order what survives."""
+        target_dollars = PositionSizing.calculate_kelly(
+            win_rate=win_rate,
+            win_loss_ratio=win_loss_ratio,
+            account_size=total_value
+        )
+        if target_dollars <= 0.0:
+            return None
+
+        proposed_shares = PositionSizing.calculate_shares(target_dollars, current_price)
+        if proposed_shares <= 0:
+            return None
+
+        eval_res = self.risk_manager.evaluate_order(
+            symbol=symbol,
+            side="buy",
+            shares=proposed_shares,
+            price=current_price,
+            cash=portfolio_cash,
+            portfolio_value=total_value,
+            current_shares=current_shares
+        )
+        if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
+            return None
+
+        self._push_decision(
+            symbol,
+            "BUY",
+            eval_res["adjusted_shares"] / proposed_shares * 0.8,
+            ["Bellman model recommends buy", "Current price within target range"]
+        )
+        return {
+            "symbol": symbol,
+            "side": "buy",
+            "quantity": eval_res["adjusted_shares"],
+            "order_type": "market"
+        }
+
+    def _translate_sell(
+        self,
+        symbol: str,
+        current_price: float,
+        portfolio_cash: float,
+        current_shares: int,
+        total_value: float
+    ) -> dict[str, Any] | None:
+        """Size a SELL against the position already held, then let the risk manager approve it."""
+        if current_shares <= 0:
+            return None
+
+        eval_res = self.risk_manager.evaluate_order(
+            symbol=symbol,
+            side="sell",
+            shares=current_shares,
+            price=current_price,
+            cash=portfolio_cash,
+            portfolio_value=total_value,
+            current_shares=current_shares
+        )
+        if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
+            return None
+
+        self._push_decision(
+            symbol,
+            "SELL",
+            0.75,
+            ["Bellman model recommends sell", "Position target reached"]
+        )
+        return {
+            "symbol": symbol,
+            "side": "sell",
+            "quantity": eval_res["adjusted_shares"],
+            "order_type": "market"
+        }
 
     def translate_decision(
         self,
@@ -370,122 +488,34 @@ class TradingExecutor:
         current_price: float,
         portfolio_cash: float,
         current_shares: int = 0,
-        portfolio_value: Optional[float] = None,
+        portfolio_value: float | None = None,
         win_rate: float = 0.6,
         win_loss_ratio: float = 2.0
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         # Extract string representation of trade movement
-        movement = None
-        if hasattr(action, "movement") and action.movement is not None:
-            movement = str(action.movement.value if hasattr(action.movement, "value") else action.movement).upper()
-        elif hasattr(action, "value"):
-            movement = str(action.value).upper()
-        elif isinstance(action, str):
-            movement = action.upper()
+        movement = self._movement_of(action)
 
         if movement in ("HOLD", "NONE", None):
             return None
 
         # Push to decision buffer
-        if WEB_SERVER_AVAILABLE and decision_buffer:
-            try:
-                from src.web_server import TradingDecision
-                decision = TradingDecision(
-                    symbol=symbol,
-                    action=movement,
-                    confidence=0.75,  # Default confidence
-                    reasoning=["Based on Bellman model"],
-                    timestamp=now_utc()
-                )
-                decision_buffer.add_decision(decision)
-            except Exception as e:
-                logger.debug(f"Error pushing decision to buffer: {e}")
+        self._push_decision(symbol, movement, 0.75, ["Based on Bellman model"])
 
-        total_value = portfolio_value if portfolio_value is not None else portfolio_cash + (current_shares * current_price)
+        total_value = (
+            portfolio_value
+            if portfolio_value is not None
+            else portfolio_cash + (current_shares * current_price)
+        )
 
         if movement == "BUY":
-            target_dollars = PositionSizing.calculate_kelly(
-                win_rate=win_rate,
-                win_loss_ratio=win_loss_ratio,
-                account_size=total_value
+            return self._translate_buy(
+                symbol, current_price, portfolio_cash, current_shares, total_value, win_rate, win_loss_ratio
             )
-            if target_dollars <= 0.0:
-                return None
-            proposed_shares = PositionSizing.calculate_shares(target_dollars, current_price)
-            if proposed_shares <= 0:
-                return None
 
-            eval_res = self.risk_manager.evaluate_order(
-                symbol=symbol,
-                side="buy",
-                shares=proposed_shares,
-                price=current_price,
-                cash=portfolio_cash,
-                portfolio_value=total_value,
-                current_shares=current_shares
+        if movement in ("SELL", "EXIT"):
+            return self._translate_sell(
+                symbol, current_price, portfolio_cash, current_shares, total_value
             )
-            if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
-                return None
-
-            # Push to decision buffer before creating order
-            if WEB_SERVER_AVAILABLE and decision_buffer:
-                try:
-                    from src.web_server import TradingDecision
-                    new_decision = TradingDecision(
-                        symbol=symbol,
-                        action="BUY",
-                        confidence=eval_res["adjusted_shares"] / proposed_shares * 0.8,
-                        reasoning=["Bellman model recommends buy", "Current price within target range"],
-                        timestamp=now_utc()
-                    )
-                    decision_buffer.add_decision(new_decision)
-                except Exception as e:
-                    logger.debug(f"Error pushing decision to buffer: {e}")
-
-            return {
-                "symbol": symbol,
-                "side": "buy",
-                "quantity": eval_res["adjusted_shares"],
-                "order_type": "market"
-            }
-
-        elif movement in ("SELL", "EXIT"):
-            if current_shares <= 0:
-                return None
-
-            eval_res = self.risk_manager.evaluate_order(
-                symbol=symbol,
-                side="sell",
-                shares=current_shares,
-                price=current_price,
-                cash=portfolio_cash,
-                portfolio_value=total_value,
-                current_shares=current_shares
-            )
-            if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
-                return None
-
-            # Push to decision buffer
-            if WEB_SERVER_AVAILABLE and decision_buffer:
-                try:
-                    from src.web_server import TradingDecision
-                    new_decision = TradingDecision(
-                        symbol=symbol,
-                        action="SELL",
-                        confidence=0.75,
-                        reasoning=["Bellman model recommends sell", "Position target reached"],
-                        timestamp=now_utc()
-                    )
-                    decision_buffer.add_decision(new_decision)
-                except Exception as e:
-                    logger.debug(f"Error pushing decision to buffer: {e}")
-
-            return {
-                "symbol": symbol,
-                "side": "sell",
-                "quantity": eval_res["adjusted_shares"],
-                "order_type": "market"
-            }
 
         return None
 
@@ -496,10 +526,10 @@ class TradingExecutor:
         current_price: float,
         portfolio_cash: float,
         current_shares: int = 0,
-        portfolio_value: Optional[float] = None,
+        portfolio_value: float | None = None,
         win_rate: float = 0.6,
         win_loss_ratio: float = 2.0
-    ) -> Optional[OrderRecord]:
+    ) -> OrderRecord | None:
         order_dict = self.translate_decision(
             action=action,
             symbol=symbol,

@@ -18,12 +18,12 @@ import json
 import logging
 import os
 from datetime import timedelta
-from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 
 from src.database import DatabaseManager
 from src.domain import Action, FullState, MarketState, PortfolioState, candidate_actions
+from src.logging_config import configure_logging
 from src.model import BellmanEngine, LinearValueFunction
 from src.sentiment_adapter import AdanosDataAdapter, get_adanos_api_key
 from src.times import from_epoch, now_utc
@@ -38,7 +38,7 @@ def _transition(
     action: Action,
     state: FullState,
     position_weight: float = POSITION_WEIGHT,
-) -> Tuple[float, FullState]:
+) -> tuple[float, FullState]:
     """Apply one action to one state and report the reward that produced it.
 
     Reward is the signed price change the agent captured: buying a bar that rose
@@ -99,7 +99,7 @@ class Backtester:
     def __init__(
         self,
         db_manager: DatabaseManager,
-        symbols: List[str],
+        symbols: list[str],
         engine: BellmanEngine,
         value_fn,
         initial_cash: float = 100_000.0,
@@ -112,7 +112,7 @@ class Backtester:
         self.initial_cash = initial_cash
         self.position_weight = position_weight
 
-    def load_bars(self, symbol: str, minutes: int = 1_440) -> List[dict]:
+    def load_bars(self, symbol: str, minutes: int = 1_440) -> list[dict]:
         """Historical bars for one symbol, oldest first."""
         start_time = now_utc() - timedelta(minutes=minutes)
         return self.db_manager.get_historical_market_data(symbol=symbol, start_time=start_time)
@@ -140,8 +140,8 @@ class Backtester:
             return {"steps": 0, "initial_value": self.initial_cash, "final_value": self.initial_cash,
                     "return": 0.0, "mean_reward": 0.0, "decisions": []}
 
-        prices: Dict[str, float] = {}
-        previous_prices: Dict[str, float] = {}
+        prices: dict[str, float] = {}
+        previous_prices: dict[str, float] = {}
         for s in self.symbols:
             bars = bars_by_symbol[s]
             if bars:
@@ -161,11 +161,10 @@ class Backtester:
             timestamp=from_epoch(min(bar_times)),
         )
 
-        transition: Callable[[Action, FullState], Tuple[float, FullState]] = (
-            lambda a, s: _transition(a, s, self.position_weight)
-        )
-        decisions: List[dict] = []
-        rewards: List[float] = []
+        def transition(action: Action, state: FullState) -> tuple[float, FullState]:
+            return _transition(action, state, self.position_weight)
+        decisions: list[dict] = []
+        rewards: list[float] = []
         for t in bar_times:
             for symbol in self.symbols:
                 bar = next((b for b in bars_by_symbol[symbol] if b["timestamp"] == t), None)
@@ -207,7 +206,7 @@ def summarize(report: dict) -> str:
 
 def main() -> None:
     """Run a backtest from the command line using DATABASE_URL and BACKTEST_*."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    configure_logging()
     symbols = [s.strip() for s in os.environ.get("BACKTEST_SYMBOLS", "").split(",") if s.strip()]
     if not symbols:
         logger.error("Set BACKTEST_SYMBOLS (comma separated) to run a backtest")

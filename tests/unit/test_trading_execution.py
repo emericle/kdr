@@ -1,6 +1,6 @@
-import pytest
 from unittest.mock import MagicMock, patch
-import os
+
+import pytest
 import requests
 
 
@@ -308,8 +308,8 @@ class TestTradingExecutor:
     """Unit tests for TradingExecutor orchestration."""
 
     def test_translate_decision_buy(self):
-        from src.trading_execution import TradingExecutor, AlpacaClient, RiskManager
-        from src.domain import TradeMovement, Action
+        from src.domain import TradeMovement
+        from src.trading_execution import AlpacaClient, TradingExecutor
 
         client = AlpacaClient(api_key="key", api_secret="sec")
         executor = TradingExecutor(alpaca_client=client)
@@ -331,8 +331,8 @@ class TestTradingExecutor:
         assert order["quantity"] * 100.0 <= 5000.0
 
     def test_translate_decision_hold_returns_none(self):
-        from src.trading_execution import TradingExecutor, AlpacaClient
         from src.domain import TradeMovement
+        from src.trading_execution import AlpacaClient, TradingExecutor
 
         client = AlpacaClient(api_key="key", api_secret="sec")
         executor = TradingExecutor(alpaca_client=client)
@@ -346,8 +346,8 @@ class TestTradingExecutor:
         assert order is None
 
     def test_translate_decision_sell(self):
-        from src.trading_execution import TradingExecutor, AlpacaClient
         from src.domain import TradeMovement
+        from src.trading_execution import AlpacaClient, TradingExecutor
 
         client = AlpacaClient(api_key="key", api_secret="sec")
         executor = TradingExecutor(alpaca_client=client)
@@ -365,8 +365,8 @@ class TestTradingExecutor:
         assert order["quantity"] == 15
 
     def test_execute_decision_end_to_end(self):
-        from src.trading_execution import TradingExecutor, AlpacaClient, OrderRecord
         from src.domain import TradeMovement
+        from src.trading_execution import AlpacaClient, OrderRecord, TradingExecutor
 
         mock_client = MagicMock(spec=AlpacaClient)
         mock_client.submit_order.return_value = OrderRecord(
@@ -395,8 +395,8 @@ class TestTradingExecutor:
         assert len(executor.order_tracker.get_order_history()) == 1
 
     def test_execute_decision_and_order_tracker_status_filtering(self):
-        from src.trading_execution import TradingExecutor, AlpacaClient, OrderRecord, OrderTracker
         from src.domain import TradeMovement
+        from src.trading_execution import AlpacaClient, OrderRecord, OrderTracker, TradingExecutor
 
         mock_client = MagicMock(spec=AlpacaClient)
         mock_client.submit_order.return_value = OrderRecord(
@@ -438,6 +438,7 @@ class TestTradingExecutor:
 
     def test_alpaca_client_session_pooling(self):
         import requests
+
         from src.trading_execution import AlpacaClient
 
         mock_session = MagicMock(spec=requests.Session)
@@ -512,8 +513,9 @@ class TestTradingExecutor:
         err_order = client.submit_order("AAPL", 10, "buy")
         assert "rejected" in err_order.status
 
-        # submit_order exception
-        mock_session.post.side_effect = Exception("Network timeout")
+        # submit_order exception: what requests raises when the broker call dies,
+        # which is the type BROKER_FAILURES names
+        mock_session.post.side_effect = requests.ConnectionError("Network timeout")
         except_order = client.submit_order("AAPL", 10, "buy")
         assert "error" in except_order.status
         mock_session.post.side_effect = None
@@ -523,7 +525,7 @@ class TestTradingExecutor:
         mock_resp_acc_err.status_code = 500
         mock_session.get.return_value = mock_resp_acc_err
         assert client.get_account() == {}
-        mock_session.get.side_effect = Exception("Acc error")
+        mock_session.get.side_effect = requests.ConnectionError("Acc error")
         assert client.get_account() == {}
         mock_session.get.side_effect = None
 
@@ -539,19 +541,19 @@ class TestTradingExecutor:
         mock_session.get.return_value = mock_resp_pos_err
         assert client.get_positions() == []
 
-        mock_session.get.side_effect = Exception("Pos error")
+        mock_session.get.side_effect = requests.ConnectionError("Pos error")
         assert client.get_positions() == []
 
     def test_executor_decision_hold_and_unsupported(self):
-        from src.trading_execution import TradingExecutor
         from src.domain import TradeMovement
+        from src.trading_execution import TradingExecutor
         executor = TradingExecutor(alpaca_client=MagicMock())
         assert executor.translate_decision(TradeMovement.HOLD, "AAPL", 150.0, 1000.0) is None
         assert executor.translate_decision("UNKNOWN_ACTION", "AAPL", 150.0, 1000.0) is None
 
     def test_executor_buy_sell_rejected_by_risk(self):
-        from src.trading_execution import TradingExecutor, RiskManager
         from src.domain import TradeMovement
+        from src.trading_execution import RiskManager, TradingExecutor
         mock_rm = MagicMock(spec=RiskManager)
         mock_rm.evaluate_order.return_value = {"approved": False, "adjusted_shares": 0, "reason": "Denied"}
         executor = TradingExecutor(alpaca_client=MagicMock(), risk_manager=mock_rm)
@@ -563,8 +565,8 @@ class TestTradingExecutor:
         assert sell_res is None
 
     def test_executor_execute_decision_validation_failure(self):
-        from src.trading_execution import TradingExecutor, OrderValidator
         from src.domain import TradeMovement
+        from src.trading_execution import OrderValidator, TradingExecutor
         mock_val = MagicMock(spec=OrderValidator)
         mock_val.validate_order.return_value = False
         executor = TradingExecutor(alpaca_client=MagicMock(), order_validator=mock_val)

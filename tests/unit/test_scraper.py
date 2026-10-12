@@ -1,27 +1,26 @@
-import pytest
-import threading
-import queue
-import time
+import asyncio
 import datetime
 import logging
-import sys
-import asyncio
-from unittest.mock import MagicMock, patch, MagicMock as Mock
+import queue
+import threading
+from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock as Mock
+
 from src.scraper import (
-    Tick,
-    DataStreamBuffer,
     AlpacaStreamProcessor,
+    DataStreamBuffer,
     DBWriterWorker,
-    setup_logging,
-    run_worker_threads,
+    Tick,
+    normalize_symbols,
     parse_args,
-    normalize_symbols
+    run_worker_threads,
+    setup_logging,
 )
 
 
 class TestTickDataclass:
     """Tests for Tick dataclass."""
-    
+
     def test_tick_creation(self):
         """Test creating a Tick instance."""
         tick = Tick(
@@ -33,7 +32,7 @@ class TestTickDataclass:
         assert tick.symbol == "AAPL"
         assert tick.price == 150.0
         assert tick.size == 100.0
-    
+
     def test_tick_with_current_time(self):
         """Test creating Tick with current datetime."""
         current_time = datetime.datetime.now()
@@ -51,19 +50,19 @@ class TestTickDataclass:
 
 class TestDataStreamBuffer:
     """Tests for DataStreamBuffer."""
-    
+
     def test_buffer_initialization(self):
         """Test initializing an empty buffer."""
         buffer = DataStreamBuffer()
         assert buffer.buffer == {}
-        assert buffer.lock != None
-    
+        assert buffer.lock is not None
+
     def test_buffer_with_nested_dict(self):
         """Test buffer structure."""
         buffer = DataStreamBuffer()
         assert isinstance(buffer.buffer, dict)
         assert isinstance(buffer.buffer.get("symbol"), dict) if "symbol" in buffer.buffer else True
-    
+
     def test_add_tick_single_symbol(self):
         """Test adding a tick for a symbol."""
         buffer = DataStreamBuffer()
@@ -74,10 +73,10 @@ class TestDataStreamBuffer:
             "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
         }
         buffer.add_tick("AAPL", tick_data)
-        
+
         assert "AAPL" in buffer.buffer
         assert len(buffer.buffer["AAPL"]) == 1
-    
+
     def test_add_tick_multiple_symbols(self):
         """Test adding ticks for multiple symbols."""
         buffer = DataStreamBuffer()
@@ -93,14 +92,14 @@ class TestDataStreamBuffer:
             "size": 50.0,
             "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
         }
-        
+
         buffer.add_tick("AAPL", tick_data1)
         buffer.add_tick("TSLA", tick_data2)
-        
+
         assert len(buffer.buffer) == 2
         assert len(buffer.buffer["AAPL"]) == 1
         assert len(buffer.buffer["TSLA"]) == 1
-    
+
     def test_add_tick_multiple_minutes(self):
         """Test adding ticks spanning multiple minutes."""
         buffer = DataStreamBuffer()
@@ -116,22 +115,22 @@ class TestDataStreamBuffer:
             "size": 100.0,
             "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
         }
-        
+
         buffer.add_tick("AAPL", tick_data1)
         buffer.add_tick("AAPL", tick_data2)
-        
+
         assert len(buffer.buffer["AAPL"]) == 2
         assert len(buffer.buffer["AAPL"]["2023-01-01 11:59"]) == 1
         assert len(buffer.buffer["AAPL"]["2023-01-01 12:00"]) == 1
-    
+
     def test_get_ready_bars_empty(self):
         """Test getting ready bars when buffer is empty."""
         buffer = DataStreamBuffer()
         symbols = ["AAPL", "TSLA"]
         ready = buffer.get_ready_bars(symbols)
-        
+
         assert ready == {}
-    
+
     def test_get_ready_bars_no_ready(self):
         """Test getting ready bars when all are from current minute."""
         buffer = DataStreamBuffer()
@@ -142,13 +141,13 @@ class TestDataStreamBuffer:
             "timestamp": datetime.datetime(2023, 1, 1, 11, 59)  # Different minute
         }
         buffer.add_tick("AAPL", tick_data)
-        
+
         symbols = ["AAPL"]
         ready = buffer.get_ready_bars(symbols)
-        
+
         # Should have the ready bar
         assert "AAPL" in ready
-    
+
     def test_get_ready_bars_with_ready(self):
         """Test getting ready bars with expired minute."""
         buffer = DataStreamBuffer()
@@ -159,10 +158,10 @@ class TestDataStreamBuffer:
             "timestamp": datetime.datetime(2023, 1, 1, 11, 59)  # Different minute
         }
         buffer.add_tick("AAPL", tick_data)
-        
+
         symbols = ["AAPL"]
         ready = buffer.get_ready_bars(symbols)
-        
+
         # Should have the ready bar
         assert "AAPL" in ready
         assert ready["AAPL"]["open"] == 150.0
@@ -170,10 +169,10 @@ class TestDataStreamBuffer:
         assert ready["AAPL"]["low"] == 150.0
         assert ready["AAPL"]["close"] == 150.0
         assert ready["AAPL"]["volume"] == 100.0
-        
+
         # Buffer should be cleared
         assert len(buffer.buffer["AAPL"]) == 0
-    
+
     def test_get_ready_bars_with_multiple_symbols(self):
         """Test getting ready bars for multiple symbols."""
         buffer = DataStreamBuffer()
@@ -189,21 +188,21 @@ class TestDataStreamBuffer:
             "size": 50.0,
             "timestamp": datetime.datetime(2023, 1, 1, 11, 59)
         }
-        
+
         buffer.add_tick("AAPL", tick_data1)
         buffer.add_tick("TSLA", tick_data2)
-        
+
         symbols = ["AAPL", "TSLA", "GOOGL"]
         ready = buffer.get_ready_bars(symbols)
-        
+
         assert "AAPL" in ready
         assert "TSLA" in ready
         assert "GOOGL" not in ready  # Never added
-    
+
     def test_get_ready_bars_multiple_ticks_same_bar(self):
         """Test getting ready bars with multiple ticks in same minute."""
         buffer = DataStreamBuffer()
-        
+
         tick_data1 = {
             "symbol": "AAPL",
             "price": 150.0,
@@ -216,13 +215,13 @@ class TestDataStreamBuffer:
             "size": 100.0,
             "timestamp": datetime.datetime(2023, 1, 1, 11, 58, 59)
         }
-        
+
         buffer.add_tick("AAPL", tick_data1)
         buffer.add_tick("AAPL", tick_data2)
-        
+
         symbols = ["AAPL"]
         ready = buffer.get_ready_bars(symbols)
-        
+
         assert ready["AAPL"]["open"] == 150.0
         assert ready["AAPL"]["high"] == 152.0  # Max price
         assert ready["AAPL"]["low"] == 150.0  # Min price
@@ -232,45 +231,45 @@ class TestDataStreamBuffer:
 
 class TestAlpacaStreamProcessor:
     """Tests for AlpacaStreamProcessor."""
-    
+
     def test_processor_initialization(self):
         """Test initializing processor."""
         mock_db = MagicMock()
         mock_state_mapper = MagicMock()
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
-        
+
         assert processor.db_manager == mock_db
         assert processor.buffer is not None
-        assert processor.running == True
-    
+        assert processor.running
+
     def test_processor_with_db_manager(self):
         """Test processor with DatabaseManager."""
         mock_db = Mock(spec='DatabaseManager')
         mock_state_mapper = MagicMock()
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
-        
+
         assert processor.db_manager == mock_db
-    
+
     def test_processor_running_flag(self):
         """Test processor running flag."""
         mock_db = MagicMock()
         mock_state_mapper = MagicMock()
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
-        
+
         assert processor.running is True
-        
+
         processor.running = False
         assert processor.running is False
-    
+
     def test_processor_buffer(self):
         """Test processor buffer instance."""
         mock_db = MagicMock()
         mock_state_mapper = MagicMock()
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
-        
+
         assert isinstance(processor.buffer, DataStreamBuffer)
-    
-    @patch('src.scraper.logger')
+
+    @patch('src.stream_client.logger')
     def test_processor_start(self, mock_logger):
         """Test processor start method."""
         mock_db = MagicMock()
@@ -526,7 +525,7 @@ class TestAlpacaStreamProcessor:
             base_url="https://paper-api.alpaca.markets",
         )
 
-        with patch("src.scraper.AlpacaTradeStream") as mock_stream_cls:
+        with patch("src.stream_client.AlpacaTradeStream") as mock_stream_cls:
             mock_instance = MagicMock()
             mock_stream_cls.return_value = mock_instance
             client = processor._init_stream_client()
@@ -543,7 +542,7 @@ class TestAlpacaStreamProcessor:
         """Test that state mapper exceptions during trade handling are logged and handled."""
         mock_db = MagicMock()
         mock_state_mapper = MagicMock()
-        mock_state_mapper.map_tick_data_to_state.side_effect = RuntimeError("Mapping failure")
+        mock_state_mapper.map_tick_data_to_state.side_effect = ValueError("Mapping failure")
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
 
         trade_data = {
@@ -582,7 +581,7 @@ class TestAlpacaStreamProcessor:
             return {}
 
         processor.flush_ready_bars = mock_flush
-        with patch("src.scraper.time.sleep") as mock_sleep:
+        with patch("src.stream_client.time.sleep") as mock_sleep:
             processor._flusher_loop()
             assert call_count == 1
             mock_sleep.assert_called_once_with(1)
@@ -592,7 +591,7 @@ class TestAlpacaStreamProcessor:
         mock_db = MagicMock()
         mock_state_mapper = MagicMock()
         mock_stream = MagicMock()
-        mock_stream.stop.side_effect = RuntimeError("Failed stopping client")
+        mock_stream.stop.side_effect = OSError("Failed stopping client")
 
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper, stream_client=mock_stream)
         mock_t1 = MagicMock()
@@ -610,74 +609,74 @@ class TestAlpacaStreamProcessor:
 
 class TestDBWriterWorker:
     """Tests for DBWriterWorker."""
-    
+
     def test_worker_initialization(self):
         """Test initializing worker."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         assert worker.db_manager == mock_db
         assert worker.queue == q
-        assert worker.running == True
-    
+        assert worker.running
+
     def test_worker_with_daemon_thread(self):
         """Test worker is daemon thread."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         assert worker.daemon is True
-    
+
     def test_worker_running_flag(self):
         """Test worker running flag."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         assert worker.running is True
-        
+
         worker.running = False
         assert worker.running is False
-    
+
     def test_save_to_db_debug_mode(self):
         """Test save_to_db is callable."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         bar_data = {
             "symbol": "AAPL",
             "price": 150.0,
             "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
         }
-        
+
         # Just ensure the method exists and can be called
         worker.save_to_db("AAPL", bar_data)
         assert True
-    
+
     def test_save_to_db_normal_mode(self):
         """Test save_to_db in normal mode."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
-        with patch('src.scraper.logger') as mock_logger:
+
+        with patch('src.db_writer.logger') as mock_logger:
             mock_logger.setLevel = MagicMock()
-            
+
             bar_data = {
                 "symbol": "AAPL",
                 "price": 150.0,
                 "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
             }
-            
+
             worker.save_to_db("AAPL", bar_data)
-            
+
             # Should not call debug in normal mode
             assert mock_logger.debug.call_count == 0
 
@@ -710,7 +709,12 @@ class TestDBWriterWorker:
         worker = DBWriterWorker(mock_db, mock_state_mapper, q, batch_size=10)
 
         bars = [
-            ("AAPL", {"symbol": "AAPL", "close": 150.0 + i, "volume": 100.0, "timestamp": datetime.datetime(2023, 1, 1, 12, i)})
+            ("AAPL", {
+                "symbol": "AAPL",
+                "close": 150.0 + i,
+                "volume": 100.0,
+                "timestamp": datetime.datetime(2023, 1, 1, 12, i),
+            })
             for i in range(5)
         ]
         for b in bars:
@@ -740,116 +744,127 @@ class TestDBWriterWorker:
         q.put(("AAPL", bar_data))
         q.put(None)
 
-        with patch("src.scraper.time.sleep") as mock_sleep:
+        with patch("src.db_writer.time.sleep") as mock_sleep:
             worker.run()
             mock_sleep.assert_called_once_with(1)
 
 
 class TestSetupLogging:
     """Tests for setup_logging function."""
-    
+
     @patch('src.scraper.logger')
     def test_setup_logging_false(self, mock_logger):
         """Test setup_logging with debug=False."""
         setup_logging(False)
-        
+
         mock_logger.setLevel.assert_called_once_with(logging.INFO)
-    
+
     @patch('src.scraper.logger')
     def test_setup_logging_true(self, mock_logger):
         """Test setup_logging with debug=True."""
         setup_logging(True)
-        
+
         mock_logger.setLevel.assert_called_once_with(logging.DEBUG)
-    
-    def test_setup_logging_without_patch(self):
-        """Test setup_logging sets global variable correctly."""
-        # This test checks the global DEBUG_MODE variable
-        import src.scraper as scraper_module
-        
-        # Before calling setup_logging, it should be False
-        initial_value = scraper_module.DEBUG_MODE
-        
-        setup_logging(initial_value)
-        
-        # After setup_logging, it could be True or False based on input
-        assert True
+
+    def test_setup_logging_records_the_debug_level(self):
+        """``setup_logging`` records the level the pipeline threads read."""
+        from src.logging_config import is_debug
+
+        setup_logging(True)
+        assert is_debug()
+        setup_logging(False)
+        assert not is_debug()
 
 
 class TestRotatingLogFile:
-    """The pipeline logs to one size-capped file, not one file per run."""
+    """The pipeline logs to one size-capped file, installed by the entrypoint."""
 
     def test_log_file_name_is_fixed(self):
         """The log path has no run timestamp, so runs share one file."""
-        import src.scraper as scraper_module
+        from src.logging_config import LOG_BACKUP_COUNT, LOG_FILENAME, LOG_MAX_BYTES
 
-        assert scraper_module.log_filename.endswith("kdr.log")
-        assert scraper_module.LOG_MAX_BYTES > 0
-        assert scraper_module.LOG_BACKUP_COUNT > 0
+        assert LOG_FILENAME.endswith("kdr.log")
+        assert LOG_MAX_BYTES > 0
+        assert LOG_BACKUP_COUNT > 0
 
     def test_installed_handler_rotates(self):
-        """Importing the pipeline installs the capped handler, not a plain one.
-
-        ``src.database`` runs a ``basicConfig`` at import, so a second
-        ``basicConfig`` without ``force=True`` is dropped and the file handler
-        never reaches the root logger; the log then grows without bound.
-        """
+        """``setup_logging`` installs the capped handler, not a plain one."""
         import logging
         import logging.handlers
-        import src.scraper as scraper_module
 
+        from src.logging_config import LOG_BACKUP_COUNT, LOG_FILENAME, LOG_MAX_BYTES
+
+        setup_logging(False)
         ours = [
             handler
             for handler in logging.root.handlers
-            if getattr(handler, "baseFilename", None) == scraper_module.log_filename
+            if getattr(handler, "baseFilename", None) == LOG_FILENAME
         ]
-        assert ours, f"no handler writes to {scraper_module.log_filename}"
+        assert ours, f"no handler writes to {LOG_FILENAME}"
         handler = ours[0]
         assert isinstance(handler, logging.handlers.RotatingFileHandler), type(handler)
-        assert handler.maxBytes == scraper_module.LOG_MAX_BYTES
-        assert handler.backupCount == scraper_module.LOG_BACKUP_COUNT
+        assert handler.maxBytes == LOG_MAX_BYTES
+        assert handler.backupCount == LOG_BACKUP_COUNT
+
+    def test_no_module_configures_logging_at_import(self):
+        """No module in src/ calls ``basicConfig`` at module level.
+
+        A call that sits at import scope reconfigures global logging for
+        whoever imported the module, which is what made a test run write into
+        the pipeline's log. Only an indented call, inside an entrypoint, is
+        allowed.
+        """
+        from pathlib import Path
+
+        for path in Path("src").glob("*.py"):
+            if path.name == "logging_config.py":
+                continue
+            for line in path.read_text().splitlines():
+                assert not line.startswith("logging.basicConfig"), (path, line)
 
 
 class TestRunWorkerThreads:
     """Tests for run_worker_threads function."""
-    
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.DatabaseManager')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.logger')
-    @patch('src.scraper.time.sleep')
-    def test_run_worker_threads_basic(self, mock_sleep, mock_logger, mock_processor_class, mock_db_class, mock_validate):
+
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.DatabaseManager')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.logger')
+    @patch('src.db_writer.time.sleep')
+    def test_run_worker_threads_basic(
+        self, mock_sleep, mock_logger, mock_processor_class, mock_db_class, mock_validate
+    ):
         """Test basic flow of run_worker_threads with continuous=False."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
         mock_db.connection.engine = MagicMock()
         mock_db_class.return_value = mock_db
-        
+
         mock_validate.return_value = None
-        
+
         try:
             run_worker_threads(continuous=False)
-        except:
+        except Exception:
             pass  # Ignore exceptions
-        
+
         assert mock_validate.called
         assert mock_db_class.called
-        assert hasattr(mock_db, "connection") and hasattr(mock_db.connection, "init_db")
-    
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.DatabaseManager')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.queue.Queue')
-    @patch('src.scraper.threading.Thread')
-    @patch('src.scraper.time.sleep')
-    @patch('src.scraper.logger')
+        assert hasattr(mock_db, "connection")
+        assert hasattr(mock_db.connection, "init_db")
+
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.DatabaseManager')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.queue.Queue')
+    @patch('src.db_writer.threading.Thread')
+    @patch('src.db_writer.time.sleep')
+    @patch('src.db_writer.logger')
     def test_run_worker_threads_with_sentinel(self, mock_sleep, mock_logger, mock_thread,
                                                mock_queue_class, mock_processor_class, mock_db_class, mock_validate):
         """Test worker threads with sentinel value."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
         mock_db_class.return_value = mock_db
-        mock_state_mapper = MagicMock()
 
         mock_queue = Mock()
         mock_queue_class.return_value = mock_queue
@@ -868,48 +883,50 @@ class TestRunWorkerThreads:
 
         try:
             run_worker_threads(continuous=False)
-        except:
+        except Exception:
             pass
 
-        assert mock_queue.get.called or True
-    
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.DatabaseManager')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.queue.Queue')
-    @patch('src.scraper.threading.Thread')
-    @patch('src.scraper.time.sleep')
-    @patch('src.scraper.logger')
-    def test_run_worker_threads_empty_queue(self, mock_sleep, mock_logger, mock_thread, 
+        assert mock_queue.get.called
+
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.DatabaseManager')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.queue.Queue')
+    @patch('src.db_writer.threading.Thread')
+    @patch('src.db_writer.time.sleep')
+    @patch('src.db_writer.logger')
+    def test_run_worker_threads_empty_queue(self, mock_sleep, mock_logger, mock_thread,
                                            mock_queue_class, mock_processor_class, mock_db_class, mock_validate):
         """Test worker threads with empty queue."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
         mock_db_class.return_value = mock_db
-        
+
         mock_queue = Mock()
         mock_queue_class.return_value = mock_queue
-        
+
         mock_thread = Mock()
         mock_thread.daemon = True
         mock_thread.start = MagicMock()
         mock_thread.start.return_value = None
-        
+
         mock_validate.return_value = None
         mock_queue.get.side_effect = queue.Empty
-        
+
         try:
             run_worker_threads(continuous=False)
-        except:
+        except Exception:
             pass
-        
+
         assert mock_validate.called
 
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.StateMapper')
-    @patch('src.scraper.DatabaseManager')
-    def test_run_worker_threads_with_duration(self, mock_db_class, mock_state_mapper, mock_processor_class, mock_validate):
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.StateMapper')
+    @patch('src.db_writer.DatabaseManager')
+    def test_run_worker_threads_with_duration(
+        self, mock_db_class, mock_state_mapper, mock_processor_class, mock_validate
+    ):
         """Test run_worker_threads with explicit duration."""
         mock_db = MagicMock()
         mock_db.connection = MagicMock()
@@ -917,10 +934,10 @@ class TestRunWorkerThreads:
         run_worker_threads(symbols=["AAPL"], duration_seconds=0.01)
         assert mock_db.connection.init_db.called
 
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.DBWriterWorker')
-    @patch('src.scraper.DatabaseManager')
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.DBWriterWorker')
+    @patch('src.db_writer.DatabaseManager')
     def test_run_worker_threads_continuous_default_with_stop_event(
         self, mock_db_class, mock_writer_class, mock_processor_class, mock_validate
     ):
@@ -947,10 +964,10 @@ class TestRunWorkerThreads:
         assert mock_processor.stop.called
         assert mock_writer.join.called
 
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.DBWriterWorker')
-    @patch('src.scraper.DatabaseManager')
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.DBWriterWorker')
+    @patch('src.db_writer.DatabaseManager')
     def test_run_worker_threads_continuous_handles_keyboard_interrupt(
         self, mock_db_class, mock_writer_class, mock_processor_class, mock_validate
     ):
@@ -976,10 +993,10 @@ class TestRunWorkerThreads:
         assert mock_processor.stop.called
         assert mock_writer.join.called
 
-    @patch('src.scraper.validate_configs')
-    @patch('src.scraper.AlpacaStreamProcessor')
-    @patch('src.scraper.DBWriterWorker')
-    @patch('src.scraper.DatabaseManager')
+    @patch('src.db_writer.validate_configs')
+    @patch('src.db_writer.AlpacaStreamProcessor')
+    @patch('src.db_writer.DBWriterWorker')
+    @patch('src.db_writer.DatabaseManager')
     def test_run_worker_threads_mock_fallback_all_symbols(
         self, mock_db_class, mock_writer_class, mock_processor_class, mock_validate
     ):
@@ -996,14 +1013,18 @@ class TestRunWorkerThreads:
         mock_processor_class.return_value = mock_processor
 
         symbols = ["AAPL", "TSLA", "GOOGL"]
-        with patch('src.scraper.queue.Queue') as mock_queue_cls:
+        with patch('src.db_writer.queue.Queue') as mock_queue_cls:
             mock_queue = MagicMock()
             mock_queue_cls.return_value = mock_queue
 
             run_worker_threads(symbols=symbols, continuous=False, mock_fallback=True)
 
             # Check that mock bars were put for all 3 symbols
-            put_symbols = [call_args[0][0][0] for call_args in mock_queue.put.call_args_list if call_args[0][0] is not None]
+            put_symbols = [
+                call_args[0][0][0]
+                for call_args in mock_queue.put.call_args_list
+                if call_args[0][0] is not None
+            ]
             assert "AAPL" in put_symbols
             assert "TSLA" in put_symbols
             assert "GOOGL" in put_symbols
@@ -1061,11 +1082,11 @@ class TestCLIArgs:
 
 class TestDataBufferConcurrency:
     """Tests for DataStreamBuffer concurrency."""
-    
+
     def test_concurrent_get_ready_bars(self):
         """Test concurrent access to get_ready_bars."""
         buffer = DataStreamBuffer()
-        
+
         # Add ticks
         tick_data = {
             "symbol": "AAPL",
@@ -1074,30 +1095,30 @@ class TestDataBufferConcurrency:
             "timestamp": datetime.datetime(2023, 1, 1, 11, 59)
         }
         buffer.add_tick("AAPL", tick_data)
-        
+
         # Multiple threads trying to get ready bars
         results = []
-        
+
         def get_bars():
             ready = buffer.get_ready_bars(["AAPL"])
             results.append(len(ready))
-        
+
         threads = []
         for _ in range(3):
             t = threading.Thread(target=get_bars)
             threads.append(t)
             t.start()
-        
+
         for t in threads:
             t.join()
-        
+
         # All should complete without errors
         assert len(results) == 3
-    
+
     def test_multiple_threads_add_ticks(self):
         """Test multiple threads adding ticks concurrently."""
         buffer = DataStreamBuffer()
-        
+
         def add_tick(symbol):
             tick_data = {
                 "symbol": symbol,
@@ -1106,18 +1127,18 @@ class TestDataBufferConcurrency:
                 "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
             }
             buffer.add_tick(symbol, tick_data)
-        
+
         threads = []
         symbols = ["AAPL", "TSLA", "GOOGL", "MSFT", "AMZN"]
-        
+
         for symbol in symbols:
             t = threading.Thread(target=add_tick, args=(symbol,))
             threads.append(t)
             t.start()
-        
+
         for t in threads:
             t.join()
-        
+
         # Verify all symbols were added
         assert len(buffer.buffer) == len(symbols)
         for symbol in symbols:
@@ -1126,18 +1147,18 @@ class TestDataBufferConcurrency:
 
 class TestDBWriterWorkerEdgeCases:
     """Tests for DBWriterWorker edge cases."""
-    
+
     def test_worker_with_large_volume_data(self):
         """Test worker with large volume data."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         # Add many items
-        for i in range(100):
+        for _ in range(100):
             q.put(("AAPL", {"timestamp": datetime.datetime(2023, 1, 1, 12, 0)}))
-        
+
         # Process using simple loop
         worker.running = True
         while True:
@@ -1149,34 +1170,38 @@ class TestDBWriterWorkerEdgeCases:
                 break
             except queue.Empty:
                 pass
-        
+
         assert mock_db.add_market_data.call_count >= 0
-    
+
     def test_worker_with_nonexistent_symbol(self):
         """Test worker handling nonexistent symbol - basic test."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         bar_data = {
             "symbol": "NONEXISTENT",
             "price": 100.0,
             "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
         }
-        
-        assert mock_db.add_market_data is not None
-    
+        q.put(("NONEXISTENT", bar_data))
+        q.put(None)
+
+        worker.run()
+
+        assert mock_db.add_market_data.called
+
     def test_worker_multiple_exceptions(self):
         """Test worker handling multiple exceptions."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-        
+
         # Add invalid data that causes exception
         q.put(("AAPL", "invalid_data"))
-        
+
         worker.running = True
         try:
             item = q.get(timeout=1)
@@ -1184,24 +1209,24 @@ class TestDBWriterWorkerEdgeCases:
                 worker.running = False
         except queue.Empty:
             pass
-        
+
         # Should handle without crashing
         assert True
 
 
 class TestAlpacaStreamProcessorEdgeCases:
     """Tests for AlpacaStreamProcessor edge cases."""
-    
-    @patch('src.scraper.DatabaseManager')
+
+    @patch('src.stream_client.DatabaseManager')
     def test_processor_start_with_invalid_db_manager(self, mock_db_class):
         """Test processor initialization with invalid db_manager."""
         mock_db_class.return_value = None
         mock_state_mapper = MagicMock()
         processor = AlpacaStreamProcessor(None, mock_state_mapper)
-        
+
         assert processor.running is True
-    
-    @patch('src.scraper.DatabaseManager')
+
+    @patch('src.stream_client.DatabaseManager')
     def test_processor_with_empty_db_manager(self, mock_db_class):
         """Test processor with empty db_manager."""
         mock_db_class.return_value = MagicMock()
@@ -1209,7 +1234,7 @@ class TestAlpacaStreamProcessorEdgeCases:
         mock_db.connection = MagicMock()
         mock_state_mapper = MagicMock()
         processor = AlpacaStreamProcessor(mock_db, mock_state_mapper)
-        
+
         assert processor.db_manager == mock_db
         assert processor.buffer is not None
 
