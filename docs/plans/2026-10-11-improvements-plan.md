@@ -6,21 +6,40 @@ code, not the docs. Companion checklist: [TODO](2026-10-11-todo.md).
 
 ## Phase 0 — Restore trust in the test suite
 
-The suite currently passes against code that is broken in the field. `tests/unit/test_database.py:218`
-and `:407` mock `filter_by`, a method SQLAlchemy sessions do not have, so the
-real call path (`src/database.py:354`) never runs. Until the DB tests exercise
-real SQLAlchemy, no DB fix can be verified.
+Two of the database tests build their expectations out of `MagicMock` chains:
+`tests/unit/test_database.py:218` and `:407` set
+`mock_session.query.return_value.filter_by.return_value.first.return_value`.
+A mock accepts any attribute name and any keyword, so that test stays green
+whether the production code calls `filter_by`, `filter`, or a method that does
+not exist. The real query path in `get_model_weights` (`src/database.py:354`)
+never runs in those tests, which is why the suite cannot be trusted to verify
+any database change.
 
-Approach: keep mocks for behavior tests, but add integration tests that run
-against the QA database the repo already supports (`SKIP_DB_TEST` / `USE_QA_DB`
-in `src/database.py:25`). The QA DB URL is the mechanism already in place; the
-gap is that no test uses it.
+Corrected during implementation: `filter_by` is a real SQLAlchemy 2.0 `Query`
+method and `src/database.py:354` works. The earlier reading of it as a
+non-existent method was a false positive, and the defect is the test, not the
+call site. Confirmed by probe: `q.filter_by(symbol="TSLA").first()` returns the
+row, and `q.filter_by(not_a_column=1)` raises `InvalidRequestError`
+("Entity namespace for "model_weights" has no property "bogus""), so the real
+session does validate column names — a mock cannot.
+
+Two more gaps in the same area:
+
+- `tests/integration_tests.py` and `tests/run_tests.py` are never collected.
+  `pytest.ini:2` sets `python_files = test_*.py *_test.py`, and neither name
+  matches, so the integration tests that exist have not run in CI or locally.
+- No test drives a real SQLAlchemy session end to end, so nothing pins the
+  query API `src/database.py` actually uses.
+
+Approach: keep mocks where they isolate behavior, but add integration tests
+that run against the QA database the repo already supports (`SKIP_DB_TEST` /
+`USE_QA_DB` in `src/database.py:25`). The QA DB URL is the mechanism already in
+place; the gap is that no test uses it.
 
 ## Phase 1 — Correctness bugs
 
 | Finding | Location | Fix |
 |---|---|---|
-| `filter_by` is not a SQLAlchemy method; `get_model_weights` raises `AttributeError` on every call | `src/database.py:354` | `.filter(ModelWeightsModel.symbol == symbol)` |
 | `schema.sql` cannot be loaded by psql: `\i 'market_data' TO ...` is the include-file directive, and `CREATE TABLE IF NOT EXISTS` is MySQL syntax | `schema.sql` | Rewrite as valid psql, or delete — nothing in `src/` or `bin/` references it; SQLAlchemy models are the schema of record |
 | Naive vs tz-aware datetimes mixed; DB column is tz-less | `database.py:272`, `scraper.py:111,159,633`, `web_server.py` (many), vs `trading_execution.py:190` | Standardize on UTC; `DateTime(timezone=True)` in `MarketDataModel` (`:84`) |
 | Version gate contradicts itself: code requires 3.13, scripts and `AGENTS.md` require 3.14 | `scraper.py:11-12` vs `bin/local-start.sh:9` | Single source of truth — 3.14 per the spec (`docs/specs/bellman_decision.md:15`) |
@@ -74,8 +93,9 @@ policy bolted on.
   `scraper.py:65`) — the second is a silent no-op. Configure once in the
   entrypoint.
 - **45 `except Exception` blocks across `src/`.** Several swallow and continue;
-  that is exactly how the `filter_by` bug stayed invisible. Narrow to specific
-  types; keep broad catches only at thread/process boundaries.
+  that is how a database error would have stayed invisible even with real tests,
+  and it is the same reason the mocked tests could not see the query API.
+  Narrow to specific types; keep broad catches only at thread/process boundaries.
 - **Tracked junk in git:** `.coverage` and `tests/unit/test_web_server.py.bak`.
 - **No `pyproject.toml`** despite a `.mypy_cache` existing — type/lint settings
   are not committed and do not survive across machines or CI.
@@ -93,10 +113,17 @@ Run after each phase, not just at the end:
 
 ```
 python -m pytest tests/          # suite must stay green
+python -m pytest tests/unit/test_database_integration.py   # real SQLAlchemy, no mocks
+USE_QA_DB=1 python -m pytest tests/unit/test_database_integration.py  # postgres tier, self-skips if unreachable
 mypy src/                        # committed config, no ad-hoc flags
 ruff check src/ tests/           # catches the dead imports and broad excepts
 psql -f schema.sql               # only if Phase 1 keeps the file
 ```
+
+`tests/unit/test_web_server.py` and `tests/unit/test_websocket_client.py` poll a
+live server with `requests.get` plus `time.sleep` loops, so a plain `pytest tests/`
+stalls for minutes with no output. Run them separately, with the server up, or
+not at all while working on the rest of the suite.
 
 ## Risk and ordering
 

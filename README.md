@@ -33,12 +33,12 @@ Run the automated startup script, which validates Python 3.14, configures the vi
 
 ```bash
 # Unix / macOS
-./start.sh              # Standard logging
-./start.sh --debug      # Verbose debug logging
+./bin/start.sh              # Standard logging
+./bin/start.sh --debug      # Verbose debug logging
 
-# Windows
-start.bat               # Standard logging
-start.bat --debug       # Verbose debug logging
+# Windows (cmd.exe)
+bin\start.bat               # Standard logging
+bin\start.bat --debug       # Verbose debug logging
 ```
 
 ### 2. Manual Setup
@@ -89,7 +89,7 @@ Check environment variables and system readiness:
 
 ```bash
 # Inspect environment variable status (values masked)
-python check_env.py
+python bin/check_env.py
 
 # Run pre-flight startup validations
 ./tests/test_startup.sh
@@ -152,14 +152,29 @@ Once running, navigate to:
 Run the full automated test suite:
 
 ```bash
-# Run all unit tests
+# Run the collected suite (pytest.ini matches test_*.py and *_test.py)
 pytest tests/unit/
 
-# Run integration tests
-python tests/integration_tests.py
+# Database integration tests: real SQLAlchemy, no mocks. The postgres tier
+# self-skips unless USE_QA_DB (or SKIP_DB_TEST) is set and a server is reachable.
+pytest tests/unit/test_database_integration.py
+USE_QA_DB=1 pytest tests/unit/test_database_integration.py
 
 # Run test suite with code coverage
 pytest tests/ --cov=src --cov-report=term-missing
+```
+
+Two caveats about the suite:
+
+- `tests/integration_tests.py` and `tests/run_tests.py` do not match the
+  `python_files` pattern in `pytest.ini`, so `pytest` never collects them. Run
+  them directly (`python tests/integration_tests.py`) or rename them.
+- `tests/unit/test_web_server.py` and `tests/unit/test_websocket_client.py` poll
+  a running server with `requests.get` and `time.sleep` loops. `pytest tests/`
+  stalls for minutes unless you exclude them:
+
+```bash
+pytest tests/ --ignore=tests/unit/test_web_server.py --ignore=tests/unit/test_websocket_client.py
 ```
 
 ---
@@ -169,8 +184,8 @@ pytest tests/ --cov=src --cov-report=term-missing
 | Issue | Cause | Resolution |
 | :--- | :--- | :--- |
 | `Python 3.14 is not installed` | Missing or mismatched Python version | Install Python 3.14 (`brew install python@3.14`) and ensure `.venv` uses `python3.14`. |
-| `ModuleNotFoundError: No module named 'src'` | Project root not in `PYTHONPATH` | Run using `./start.sh` or export `PYTHONPATH="${PYTHONPATH}:$(pwd)"`. |
-| `AuthenticationError` | Invalid Alpaca or Adanos credentials | Verify keys in `.env` or run `python check_env.py`. |
+| `ModuleNotFoundError: No module named 'src'` | Project root not in `PYTHONPATH` | Run using `./bin/start.sh` or export `PYTHONPATH="${PYTHONPATH}:$(pwd)"`. |
+| `AuthenticationError` | Invalid Alpaca or Adanos credentials | Verify keys in `.env` or run `python bin/check_env.py`. |
 | `DatabaseConnectionError` / `pg_isready` failure | PostgreSQL service is offline | Verify PostgreSQL is running (`brew services start postgresql`) and check `DATABASE_URL`. |
 | `RateLimitError` | API rate limit exceeded | Back off polling frequency or check subscription tier limits. |
 
