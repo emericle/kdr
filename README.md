@@ -153,29 +153,27 @@ Run the full automated test suite:
 
 ```bash
 # Run the collected suite (pytest.ini matches test_*.py and *_test.py)
-pytest tests/unit/
+pytest tests/
 
 # Database integration tests: real SQLAlchemy, no mocks. The postgres tier
 # self-skips unless USE_QA_DB (or SKIP_DB_TEST) is set and a server is reachable.
 pytest tests/unit/test_database_integration.py
 USE_QA_DB=1 pytest tests/unit/test_database_integration.py
 
+# Pipeline contract tests: domain, model, risk sizing, execution, stream -> DB
+pytest tests/test_integration_pipeline.py
+
 # Run test suite with code coverage
 pytest tests/ --cov=src --cov-report=term-missing
 ```
 
-Two caveats about the suite:
-
-- `tests/integration_tests.py` and `tests/run_tests.py` do not match the
-  `python_files` pattern in `pytest.ini`, so `pytest` never collects them. Run
-  them directly (`python tests/integration_tests.py`) or rename them.
-- `tests/unit/test_web_server.py` and `tests/unit/test_websocket_client.py` poll
-  a running server with `requests.get` and `time.sleep` loops. `pytest tests/`
-  stalls for minutes unless you exclude them:
-
-```bash
-pytest tests/ --ignore=tests/unit/test_web_server.py --ignore=tests/unit/test_websocket_client.py
-```
+The whole `tests/` tree is collected and runs in seconds. Two fixtures in
+`tests/conftest.py` keep it that way without a live system: a bounded probe of
+the configured database gates the server and websocket modules (they skip when
+the DB is unreachable), and when it is unreachable the web server's DB accessor
+is stubbed to `None`, which is the same state the app reaches when database
+construction fails. To exercise the skipped tests, start the app and point
+`DATABASE_URL` at a reachable host.
 
 ---
 
@@ -212,7 +210,8 @@ pytest tests/ --ignore=tests/unit/test_web_server.py --ignore=tests/unit/test_we
 │   ├── reporting.py     # CSV, metrics, and Plotly equity chart generators
 │   └── static/          # Web dashboard (Vue 3 + Chart.js)
 ├── tests/               # Unit and integration test suites
-│   ├── integration_tests.py # Full pipeline integration tests
+│   ├── conftest.py      # Database reachability gate shared by all tests
+│   ├── test_integration_pipeline.py # Pipeline contract tests (domain → DB)
 │   └── unit/            # Component unit tests
 ├── requirements.txt     # Python package dependencies
 └── AGENTS.md            # Agent instructions and context guidelines

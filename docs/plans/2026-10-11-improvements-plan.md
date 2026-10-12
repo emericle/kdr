@@ -23,13 +23,23 @@ row, and `q.filter_by(not_a_column=1)` raises `InvalidRequestError`
 ("Entity namespace for "model_weights" has no property "bogus""), so the real
 session does validate column names — a mock cannot.
 
-Two more gaps in the same area:
+Two more gaps in the same area, both closed during implementation:
 
 - `tests/integration_tests.py` and `tests/run_tests.py` are never collected.
   `pytest.ini:2` sets `python_files = test_*.py *_test.py`, and neither name
   matches, so the integration tests that exist have not run in CI or locally.
+  Replaced by `tests/test_integration_pipeline.py`, a collected pytest module
+  with real assertions; the script and the `run_tests.py` path shim are deleted.
 - No test drives a real SQLAlchemy session end to end, so nothing pins the
   query API `src/database.py` actually uses.
+
+A third gap found while running the suite: `tests/unit/test_web_server.py` and
+`tests/unit/test_websocket_client.py` poll a live uvicorn server with bare
+`requests.get` calls and no timeout, and the routes they hit reach the
+configured postgres host (`pinky.local`), which resolves over mDNS to several
+unreachable addresses — each connect costs ~6.5s. A plain `pytest tests/` run
+stalled for minutes. Fixed with a bounded reachability probe in `tests/conftest.py`
+that both modules' fixtures request, plus a `timeout=` on every request call.
 
 Approach: keep mocks where they isolate behavior, but add integration tests
 that run against the QA database the repo already supports (`SKIP_DB_TEST` /
@@ -115,15 +125,16 @@ Run after each phase, not just at the end:
 python -m pytest tests/          # suite must stay green
 python -m pytest tests/unit/test_database_integration.py   # real SQLAlchemy, no mocks
 USE_QA_DB=1 python -m pytest tests/unit/test_database_integration.py  # postgres tier, self-skips if unreachable
+python -m pytest tests/test_integration_pipeline.py        # domain/model/execution/stream contracts
 mypy src/                        # committed config, no ad-hoc flags
 ruff check src/ tests/           # catches the dead imports and broad excepts
 psql -f schema.sql               # only if Phase 1 keeps the file
 ```
 
-`tests/unit/test_web_server.py` and `tests/unit/test_websocket_client.py` poll a
-live server with `requests.get` plus `time.sleep` loops, so a plain `pytest tests/`
-stalls for minutes with no output. Run them separately, with the server up, or
-not at all while working on the rest of the suite.
+The whole `tests/` tree is collected and fast now: the two live-server modules
+skip themselves when the configured database is unreachable, so `pytest tests/`
+finishes in seconds rather than minutes. To run those modules against a real
+server, start the app and point `DATABASE_URL` at a reachable host.
 
 ## Risk and ordering
 
