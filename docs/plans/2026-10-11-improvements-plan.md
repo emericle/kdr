@@ -117,6 +117,24 @@ policy bolted on.
 - **`test` is a symlink to `tests`**, not a second test tree — worth knowing
   before grepping for test files.
 
+## Phase 2b — The model in the live path (found while implementing Phase 2)
+
+Phase 2 made the model correct in isolation, and the review found that the running
+system never consults it: the pipeline and the execution path decided from
+heuristics, and nothing trained or loaded the weights the spec's loop produces.
+Both halves are closed together, because a model that is never fit and a model
+that is never asked are the same gap seen from two sides:
+
+- One reward and successor model (`portfolio_transition` in `src/model.py`) for
+  the live path and the backtest, so a decision and a replay cannot disagree about
+  what a bar was worth.
+- `TradingExecutor.decide` scores the action space and returns the argmax with the
+  scores and a confidence; `StateMapper.build_decision_state` hands it the state.
+- `Backtester.replay` walks stored bars once and answers two questions, so `run()`
+  reports and `train()` fits the same walk; `RLTrainer.fit` is the TD(0) pass,
+  `BACKTEST_TRAIN_EPOCHS` runs it, and `save_model_weights`/`load_value_function`
+  move the parameters across processes.
+
 ## Verification
 
 Run after each phase, not just at the end:

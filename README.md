@@ -7,8 +7,9 @@ A Python 3.14-powered trading engine that leverages a **Bellman decision model**
 ## Features
 
 - **Bellman Decision Engine:** Scores every candidate trade movement as immediate reward plus discounted future value (`r + γ·V(s')`) and acts on the argmax, so the discount factor shapes decisions; a value-function training loop fits `V` to those targets.
+- **The Live Path Decides With That Model:** The ingestion pipeline hands every bar it maps a `FullState` to `TradingExecutor.decide`, so the decision the dashboard shows is the model's argmax, not a momentum heuristic; a tie with `HOLD` decides `HOLD`.
 - **Normalized State Vector:** Log price changes, sentiment rescaled onto [-1, 1], position flags and cash as a fraction of portfolio value, so one value function serves symbols priced from a cent to six figures; `KDR_STATE_VECTOR_SCHEMA=legacy` reproduces the old raw layout for comparison.
-- **Backtesting Harness:** Replays stored bars through the live decision path as a paper portfolio and reports the return, the mean reward and every decision (`BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest`).
+- **Backtesting & Training Harness:** Replays stored bars through the live decision path as a paper portfolio and reports the return, the mean reward and every decision (`BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest`). The same walk also fits the value function (`BACKTEST_TRAIN_EPOCHS=3`), and the trained weights are stored in the `model_weights` table for the next process to load.
 - **Risk Management:** Dynamic position sizing powered by the Kelly Criterion with a strict 20% portfolio capital allocation cap.
 - **Real-Time Data Ingestion:** Live streaming trade and bar WebSocket ingestion via Alpaca Markets.
 - **Sentiment Analysis:** Multi-source financial sentiment scoring via Adanos API.
@@ -89,6 +90,7 @@ Configure `.env` in the repository root:
 | `BACKTEST_SYMBOLS` | No | Comma-separated symbols `python -m src.backtest` replays. Required for that command; ignored elsewhere. |
 | `BACKTEST_CASH` | No | Paper portfolio's starting cash for the backtest (default `100000`). |
 | `BACKTEST_MINUTES` | No | Window of stored bars the backtest replays, in minutes (default `1440`). |
+| `BACKTEST_TRAIN_EPOCHS` | No | Times to fit the value function to that same window after reporting the backtest (default `0`, meaning no training). A trained pass stores the weights in the `model_weights` table under the symbol list the state vector covers, which is what the pipeline loads. |
 
 Nothing in the source carries a database address of its own. If neither `DATABASE_URL` nor the QA override resolves, `get_database_url` logs an error and returns an empty string, and connecting raises rather than silently writing somewhere else.
 
@@ -157,9 +159,24 @@ python src/scraper.py --duration 60
 python src/scraper.py --no-continuous
 ```
 
+The pipeline decides with the model. Every bar it maps is turned into a `FullState`
+(`StateMapper.build_decision_state`: the bar's close measured against its open,
+neutral sentiment when Adanos has nothing to report, and the portfolio the decision
+belongs to) and scored by `TradingExecutor.decide`, which takes the argmax of
+`r + γ·V(s')` over `BUY`, `SELL` and `HOLD` for that symbol. The dashboard's
+decision row is that result, with the winning score and the margin over the
+runner-up as its confidence. A writer built without an executor — a test, a
+notebook — keeps the momentum heuristic instead, so the two paths stay visibly
+different. The value function it scores with is the one a previous training pass
+stored in the `model_weights` table for the symbols being traded; with nothing
+stored the process starts untrained, which means scoring on the immediate reward.
+
 ### Backtesting
 
-Replay stored bars through the decision model as a paper portfolio. This is the spec's validation step: the harness drives the same state, action space and engine the live system uses, on data whose outcome is already known, and it never touches the broker.
+Replay stored bars through the decision model as a paper portfolio. This is the
+spec's validation step: the harness drives the same state, action space and engine
+the live system uses, on data whose outcome is already known, and it never touches
+the broker.
 
 ```bash
 # Replay the last 1440 minutes of stored bars for two symbols
@@ -167,9 +184,25 @@ BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest
 
 # Wider window and a different starting portfolio
 BACKTEST_SYMBOLS=AAPL,TSLA BACKTEST_MINUTES=10080 BACKTEST_CASH=250000 python -m src.backtest
+
+# Same history, then fit the value function to it and store the weights
+BACKTEST_SYMBOLS=AAPL,TSLA BACKTEST_TRAIN_EPOCHS=3 python -m src.backtest
 ```
 
-The command prints a one line summary (`steps decisions, start -> end (+/-return)`) and the full JSON report: decision count, starting and ending portfolio value, return, mean reward, and one entry per decision with the timestamp, symbol, movement, reward and portfolio value after the move. `src/backtest.py` also exposes `Backtester` and `_transition` for use in tests and notebooks.
+The command prints a one line summary (`steps decisions, start -> end (+/-return)`)
+and the full JSON report: decision count, starting and ending portfolio value,
+return, mean reward, and one entry per decision with the timestamp, symbol,
+movement, reward and portfolio value after the move. With `BACKTEST_TRAIN_EPOCHS`
+set it prints a second report — epochs, steps and the mean reward of the last one —
+and writes the fitted parameters to the `model_weights` table.
+
+One walk of the history answers both questions: `Backtester.replay` returns the
+decisions and the `(state vector, reward, next state vector)` triples, `run()`
+turns the decisions into the report above and `train()` fits one TD(0) pass per
+epoch over the triples. The reward model is `portfolio_transition` in `src/model.py`
+— the same function the live path scores with — and `load_value_function` reads
+stored weights back, dropping a record whose vector length does not match the
+symbols it was asked about rather than scoring against it.
 
 ### Background Service Management
 
@@ -285,16 +318,16 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 │   └── specs/           # Feature specifications (Bellman decision model)
 ├── src/                 # Core engine source code
 │   ├── domain.py        # Pydantic schemas (MarketState, PortfolioState, Action)
-│   ├── model.py         # Bellman decision engine and RL training
-│   ├── backtest.py      # Historical replay and paper-portfolio validation
+│   ├── model.py         # Bellman engine, the shared reward model, and the training loop
+│   ├── backtest.py      # Historical replay, paper portfolio, and the training pass
 │   ├── trading_execution.py # Risk management, Kelly sizing, and Alpaca execution
 │   ├── scraper.py       # CLI for the pipeline; re-exports the modules below
 │   ├── stream_client.py # Alpaca WebSocket streaming (AlpacaStreamProcessor)
 │   ├── data_buffer.py   # Minute-bucketed tick aggregation (DataStreamBuffer)
-│   ├── db_writer.py     # Queue draining, DBWriterWorker, run_worker_threads
+│   ├── db_writer.py     # Queue draining, DBWriterWorker, run_worker_threads, live decisions
 │   ├── logging_config.py # The one logging configuration (rotating logs/kdr.log)
-│   ├── database.py      # SQLAlchemy persistence and schema migrations
-│   ├── state_mapper.py  # Tick/bar transformation to domain states
+│   ├── database.py      # SQLAlchemy persistence, schema migrations, stored weights
+│   ├── state_mapper.py  # Tick/bar → domain states, incl. the state the model decides on
 │   ├── sentiment_adapter.py # Adanos sentiment integration
 │   ├── web_server/      # FastAPI REST & WebSocket server, as a package
 │   │   ├── data_layer.py  # buffers, the index store, database access
