@@ -53,6 +53,7 @@ The engine is handed two functions rather than a policy: `transition(action, sta
   - `AlpacaStreamProcessor`: Subscribes to live Alpaca WebSocket trade and bar feeds, with automated background flushing.
   - `DataStreamBuffer`: Thread-safe, $O(1)$ running OHLCV state aggregation and fast minute key generation, avoiding per-tick string formatting and $O(5N)$ traversals.
   - `DBWriterWorker`: Background worker draining tick and bar queues in batches for single-transaction persistence.
+  - Logging goes to one rotating file, `logs/kdr.log`, capped at 10 MB with five backups, rather than a fresh file per run.
 - **State Mapper (`src/state_mapper.py`)**:
   - Single-pass transformations mapping incoming raw ticks and bars into structured `MarketState` and `FullState` objects.
 - **Sentiment & Data Adapters (`src/sentiment_adapter.py`, `src/data_adapters.py`)**:
@@ -60,6 +61,8 @@ The engine is handed two functions rather than a policy: `transition(action, sta
 - **Persistence (`src/database.py`)**:
   - `DatabaseManager`: SQLAlchemy DeclarativeBase models with connection pooling and batched inserts (`session.add_all`) for high-throughput persistence.
   - Timestamps are stored as UTC-aware values (`DateTime(timezone=True)`), so PostgreSQL keeps the offset and range queries stay correct across DST and timezones. On read, `DatabaseManager` normalizes whatever the row holds back to a UTC-aware `datetime` before comparing it with the caller's boundary.
+  - `(symbol, timestamp)` carries a unique index, so a bar a stream reconnect or a re-run hands back is skipped instead of stored twice: the batch is deduplicated in memory, checked against what is already stored with one query, and a batch that loses that check to a concurrent writer is retried one record at a time.
+  - Interval-start prices (`1h`, `24h`, `5d`, `30d`, `1y`, `ytd`) are read through `get_prices_at_interval_starts`, which shares one anchor read across every duration for a symbol and caches the result for the minute it was read in; the cache is dropped on every write, so the dashboard never serves a stale anchor.
 - **Time (`src/times.py`)**:
   - Single source of truth for every timestamp in the system. `now_utc`, `to_utc`, `parse_iso`, `epoch_seconds`, `from_epoch`, `epoch_minute`, `minute_key` and `hhmmss` are the only time primitives the other modules call; nothing in `src/` calls `datetime.now()` or `datetime.utcnow()`. The remaining `time.time()` calls measure elapsed durations (log rotation, stream timeouts, DB reconnect backoff), where the clock's offset is irrelevant.
   - `to_utc` buckets numeric epochs by magnitude (nanoseconds above `1e15`, milliseconds above `1e12`, seconds below), so Alpaca's millisecond and nanosecond feeds keep their precision instead of being truncated. A naive `datetime` is read as UTC; a value that is not a timestamp at all raises `TypeError`, which adapters turn into a `ValueError` naming the offending input.

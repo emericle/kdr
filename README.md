@@ -180,11 +180,16 @@ Use the helper scripts in `bin/` to manage background execution:
 ./bin/local-start.sh
 
 # Monitor background logs
-tail -f logs/system.log
+tail -f logs/kdr.log
 
 # Gracefully stop the background pipeline
 ./bin/local-stop.sh
 ```
+
+The pipeline writes one log file, `logs/kdr.log`, that rotates at 10 MB and keeps
+five backups, so a service left running for weeks cannot fill the disk with a
+per-run file. The helper scripts in `bin/` point at that same file and no longer
+keep a second copy of the same stream.
 
 ### Real-Time Web Dashboard
 
