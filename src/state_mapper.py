@@ -25,10 +25,20 @@ class StateMapper:
         alpaca_adapter: Optional[AlpacaDataAdapter] = None,
         adanos_adapter: Optional[AdanosDataAdapter] = None
     ):
-        """Initialize the state mapper with configured adapters."""
-        is_valid = validate_configs(exit_on_error=False)
-        if not is_valid:
-            logger.info("Configuration validation skipped during StateMapper init.")
+        """Initialize the state mapper with configured adapters.
+
+        Raises:
+            RuntimeError: If required configuration is missing. The adapters
+                cannot work without it, so failing here keeps the error at the
+                point where the configuration was set rather than surfacing it
+                as an ``adanos_client is None`` crash mid-pipeline.
+        """
+        if not validate_configs(exit_on_error=False):
+            raise RuntimeError(
+                "Required configuration is missing. Set ADANOS_API_KEY, "
+                "ALPACA_API_KEY, ALPACA_SECRET_KEY and DATABASE_URL "
+                "(see .env.example)."
+            )
         self.alpaca_adapter = alpaca_adapter or AlpacaDataAdapter()
         self.adanos_adapter = adanos_adapter or AdanosDataAdapter()
 

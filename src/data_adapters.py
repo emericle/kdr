@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 from datetime import datetime
 
 from src.times import to_utc
-from src.domain import MarketState, PortfolioState, FullState
+from src.domain import MarketState, PortfolioState, FullState, TimestampInput
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ class AlpacaDataAdapter:
     def create_full_state(
         ticks: Optional[List[dict]] = None,
         positions: Optional[List[dict]] = None,
-        timestamp: Optional[float] = None
+        timestamp: TimestampInput = None
     ) -> FullState:
         """
         Create a complete state combining market and portfolio data.
@@ -175,5 +175,5 @@ class AlpacaDataAdapter:
         return FullState(
             market=market_state,
             portfolio=portfolio_state,
-            timestamp=timestamp
+            timestamp=to_utc(timestamp) if timestamp is not None else None,
         )

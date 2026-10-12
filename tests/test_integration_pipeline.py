@@ -15,6 +15,8 @@ import tempfile
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import numpy as np
+
 from src.domain import FullState, MarketState, PortfolioState, TradeMovement
 from src.model import BellmanEngine
 from src.reporting import CSVReporter, ChartGenerator, PerformanceAnalyzer
@@ -44,8 +46,27 @@ def test_full_state_composes_market_and_portfolio():
     state = FullState(market=market, portfolio=portfolio)
     vector = state.to_vector(["AAPL", "MSFT"])
 
-    # One price/holding/sentiment triple per symbol, then cash.
-    assert vector.tolist() == [155.0, 50.0, 0.75, 250.0, 0.0, 0.0, 10000.0]
+    # Per symbol: log price change (0 with no previous price), sentiment scaled
+    # onto [-1, 1] (a missing score is the bottom of the scale), position flag.
+    # Then cash as a fraction of the portfolio's total value.
+    assert len(vector) == 7
+    assert np.allclose(
+        vector,
+        [
+            0.0,
+            0.5,
+            1.0,
+            0.0,
+            -1.0,
+            0.0,
+            10000.0 / (10000.0 + 50.0 * 155.0),
+        ],
+    )
+
+    # The legacy layout is the raw one the old model trained on, and it is the
+    # same length, so a run under either flag can be compared.
+    legacy = state.to_vector(["AAPL", "MSFT"], schema="legacy")
+    assert legacy.tolist() == [155.0, 50.0, 0.75, 250.0, 0.0, 0.0, 10000.0]
 
 
 def test_risk_manager_caps_order_at_kelly_fraction():

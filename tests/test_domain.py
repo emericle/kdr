@@ -26,15 +26,22 @@ def test_full_state_vectorization():
     fs = FullState(market=ms, portfolio=ps, timestamp=1625000000.0)
 
     symbols = ["AAPL"]
-    # Expected vector: [price, holding, sentiment, cash]
-    # Vector length = len(symbols) * 3 + 1 = 1 * 3 + 1 = 4
+    # Normalized layout: log price change, sentiment on [-1, 1], position flag,
+    # cash as a fraction of portfolio value. Vector length = len(symbols) * 3 + 1.
     vector = fs.to_vector(symbols)
-    
+
     assert len(vector) == 4
-    assert vector[0] == 150.0
-    assert vector[1] == 10.0
-    assert vector[2] == 0.5
-    assert vector[3] == 100.0
+    # No previous price, so the change is 0; sentiment 0.5 is the centre of 0..1.
+    assert vector[0] == 0.0
+    assert vector[1] == 0.0
+    assert vector[2] == 1.0
+    # Portfolio value is 100 cash + 10 * 150, so cash is a sixteenth of it.
+    assert vector[3] == pytest.approx(100.0 / 1600.0)
+
+    # The pre-normalization layout is still reachable, so an old and a new run
+    # can be compared feature by feature.
+    legacy = fs.to_vector(symbols, schema="legacy")
+    assert legacy.tolist() == [150.0, 10.0, 0.5, 100.0]
 
 def test_action_creation():
     # Discrete action
