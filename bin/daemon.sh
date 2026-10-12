@@ -4,10 +4,18 @@
 # Manages the KDR service as a background daemon
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+if [ -f "${SCRIPT_DIR}/../requirements.txt" ]; then
+    PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
+elif [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
+    PROJECT_ROOT="${SCRIPT_DIR}"
+else
+    PROJECT_ROOT="$(pwd)"
+fi
 
-PID_FILE="${SCRIPT_DIR}/kdr.pid"
-LOG_FILE="${SCRIPT_DIR}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
+cd "$PROJECT_ROOT"
+
+PID_FILE="${PROJECT_ROOT}/kdr.pid"
+LOG_FILE="${PROJECT_ROOT}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
 
 # Function to start the daemon
 start_daemon() {
@@ -15,7 +23,7 @@ start_daemon() {
         local PID=$(cat "$PID_FILE")
         if ps -p $PID > /dev/null 2>&1; then
             echo "KDR service is already running (PID: $PID)"
-            echo "To stop it, run: ./start.sh stop"
+            echo "To stop it, run: ./bin/start.sh stop"
             exit 0
         else
             echo "Removing stale PID file"
@@ -24,7 +32,7 @@ start_daemon() {
     fi
 
     # Create log directory
-    mkdir -p "${SCRIPT_DIR}/logs"
+    mkdir -p "${PROJECT_ROOT}/logs"
 
     echo "Starting KDR Data Ingestion Pipeline..."
     echo "Log file: $LOG_FILE"
@@ -49,9 +57,9 @@ start_daemon() {
     echo "✓ KDR service started successfully (PID: $PID)"
     echo ""
     echo "Useful commands:"
-    echo "  Check status:   ./daemon.sh status"
+    echo "  Check status:   ./bin/daemon.sh status"
     echo "  View logs:      tail -f $LOG_FILE"
-    echo "  Stop service:   ./daemon.sh stop"
+    echo "  Stop service:   ./bin/daemon.sh stop"
 }
 
 # Function to stop the daemon
@@ -119,7 +127,7 @@ status_daemon() {
         echo "PID: $PID"
 
         # Find the latest log file
-        LOG_FILE=$(ls -t "${SCRIPT_DIR}"/logs/kdr_*.log 2>/dev/null | head -1)
+        LOG_FILE=$(ls -t "${PROJECT_ROOT}"/logs/kdr_*.log 2>/dev/null | head -1)
         if [ -n "$LOG_FILE" ]; then
             echo "Log file: $LOG_FILE"
 
