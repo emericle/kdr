@@ -434,7 +434,7 @@ class TradingExecutor:
                     new_decision = TradingDecision(
                         symbol=symbol,
                         action="BUY",
-                        confidence=eval_res.get("adjusted_shares") / proposed_shares * 0.8,
+                        confidence=eval_res["adjusted_shares"] / proposed_shares * 0.8,
                         reasoning=["Bellman model recommends buy", "Current price within target range"],
                         timestamp=now_utc()
                     )

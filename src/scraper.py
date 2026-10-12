@@ -43,8 +43,10 @@ try:
     WEB_SERVER_AVAILABLE = True
 except ImportError:
     WEB_SERVER_AVAILABLE = False
-    market_buffer = None
-    decision_buffer = None
+    # The buffers are singletons owned by web_server; without it there is nothing to
+    # push to. Every use site checks WEB_SERVER_AVAILABLE first.
+    market_buffer = None  # type: ignore[assignment]
+    decision_buffer = None  # type: ignore[assignment]
 
 try:
     from alpaca_trade_api.stream import Stream as AlpacaTradeStream
@@ -294,7 +296,8 @@ class AlpacaStreamProcessor:
                 market_buffer.add_tick(
                     symbol=symbol,
                     price=parsed['price'],
-                    size=parsed['size'] if 'size' in parsed else None
+                    size=parsed['size'],
+                    timestamp=parsed['timestamp'],
                 )
             except Exception as e:
                 logger.debug("Error pushing to market buffer: %s", e)

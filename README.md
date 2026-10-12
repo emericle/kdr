@@ -93,12 +93,13 @@ Every timestamp the system records is UTC. `src/times.py` is the single place th
 | Helper | Purpose |
 | :--- | :--- |
 | `now_utc()` | Current time as a timezone-aware UTC `datetime` — use this instead of `datetime.now()` or `time.time()` |
-| `to_utc(value)` | Accepts a `datetime` (naive is read as UTC) or a numeric epoch in seconds, milliseconds or nanoseconds, and returns a UTC-aware `datetime` |
+| `to_utc(value)` | Accepts a `datetime` (naive is read as UTC), a numeric epoch in seconds, milliseconds or nanoseconds, or ISO-8601 text, and returns a UTC-aware `datetime` |
 | `parse_iso(text)` | ISO-8601 text, read as UTC when it carries no offset |
 | `epoch_seconds(value)` | The float seconds value to store or compare against |
 | `from_epoch(seconds)` | Inverse of `epoch_seconds` |
 | `hhmmss(value)` | `HH:MM:SS` display text in UTC |
-| `minute_bucket(value)` | Minute-granularity bucket key for market data |
+| `epoch_minute(value)` | Minutes since the epoch — the key one-minute bars are bucketed by |
+| `minute_key(value)` | `YYYY-MM-DD HH:MM` minute key for market data |
 
 Stored timestamps are UTC-aware `datetime` values, so PostgreSQL keeps the offset and comparisons stay correct across DST and timezones. Numeric epoch values keep their precision: a nanosecond timestamp is not silently truncated to seconds.
 

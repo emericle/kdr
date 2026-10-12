@@ -50,12 +50,17 @@ class MarketTick:
 
 @dataclass
 class TradingDecision:
-    """A trading recommendation or execution decision."""
+    """A trading recommendation or execution decision.
+
+    ``timestamp`` is a timezone-aware UTC ``datetime``: every producer hands the
+    buffer a datetime (``now_utc()`` or a parsed bar time), and ``to_dict`` renders
+    it as epoch seconds, which is the unit the dashboard's charts read.
+    """
     symbol: str
     action: str  # BUY, SELL, HOLD
     confidence: float  # 0.0 to 1.0
     reasoning: List[str] = field(default_factory=list)
-    timestamp: float = field(default_factory=time.time)
+    timestamp: datetime = field(default_factory=now_utc)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -63,7 +68,7 @@ class TradingDecision:
             "action": self.action,
             "confidence": round(self.confidence, 2),
             "reasoning": self.reasoning,
-            "timestamp": self.timestamp,
+            "timestamp": epoch_seconds(self.timestamp),
             "time_str": hhmmss(self.timestamp)
         }
 
@@ -227,7 +232,7 @@ class IndexStore:
                     "change": 0.0,
                     "changePercent": 0.0,
                     "priceType": price_type,
-                    "lastUpdate": last_update or now_utc().strftime("%H:%M:%S")
+                    "lastUpdate": last_update or hhmmss(now_utc())
                 }
             item = self._indexes[index]
             prev_price = item.get("currentPrice") or current_price
@@ -254,7 +259,7 @@ class IndexStore:
 
             item["currentPrice"] = round(float(current_price), 2)
             item["priceType"] = price_type
-            item["lastUpdate"] = last_update or now_utc().strftime("%H:%M:%S")
+            item["lastUpdate"] = last_update or hhmmss(now_utc())
             self._save_unlocked()
 
     def get_index(self, index: str) -> Dict[str, Any]:
@@ -331,7 +336,7 @@ class MarketDataBuffer:
         timestamp: Optional[Any] = None
     ) -> MarketTick:
         symbol = symbol.upper()
-        ts = time.time()
+        ts = epoch_seconds(now_utc())
         if timestamp is not None:
             ts = epoch_seconds(timestamp)
 
@@ -623,23 +628,16 @@ class DecisionBuffer:
                 action=str(symbol.action).upper(),
                 confidence=float(getattr(symbol, "confidence", confidence)),
                 reasoning=getattr(symbol, "reasoning", reasoning) or [],
-                timestamp=time.time()
+                timestamp=to_utc(timestamp) if timestamp is not None else now_utc()
             )
         else:
             sym = str(symbol).upper()
-            ts = time.time()
-            if timestamp is not None:
-                if isinstance(timestamp, (int, float)):
-                    ts = float(timestamp if timestamp < 1e11 else timestamp / 1e9)
-                elif isinstance(timestamp, datetime):
-                    ts = timestamp.timestamp()
-
             decision = TradingDecision(
                 symbol=sym,
                 action=str(action or "HOLD").upper(),
                 confidence=float(confidence),
                 reasoning=reasoning or [],
-                timestamp=ts
+                timestamp=to_utc(timestamp) if timestamp is not None else now_utc()
             )
 
         with self._lock:
@@ -794,8 +792,8 @@ def compute_recommendation(symbol: str) -> Dict[str, Any]:
         "action": action,
         "confidence": round(conf, 2),
         "reasoning": reasons,
-        "timestamp": time.time(),
-        "time_str": now_utc().strftime("%H:%M:%S")
+        "timestamp": epoch_seconds(now_utc()),
+        "time_str": hhmmss(now_utc())
     }
 
 
@@ -872,8 +870,8 @@ async def broadcast_loop(interval: float = 1.0):
 
             payload = {
                 "type": "update",
-                "timestamp": time.time(),
-                "time_str": now_utc().strftime("%H:%M:%S"),
+                "timestamp": epoch_seconds(now_utc()),
+                "time_str": hhmmss(now_utc()),
                 "symbols": symbol_summaries,
                 "decisions": decisions,
                 "market_indexes": market_indexes,
@@ -946,7 +944,7 @@ async def get_status():
         "status": "online",
         "symbols_tracked": len(symbols),
         "symbols": symbols,
-        "timestamp": time.time()
+        "timestamp": epoch_seconds(now_utc())
     }
 
 
@@ -1101,8 +1099,8 @@ async def get_symbol_detail(
             "symbol": symbol,
             "price": summary["currentPrice"],
             "size": summary.get("volume", 0.0),
-            "timestamp": time.time(),
-            "time_str": now_utc().strftime("%H:%M:%S")
+            "timestamp": epoch_seconds(now_utc()),
+            "time_str": hhmmss(now_utc())
         })
 
     decision = compute_recommendation(symbol)
@@ -1153,8 +1151,8 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info(f"Sending init message with {len(summaries)} symbols and {len(market_indexes)} market indexes")
         await websocket.send_json({
             "type": "init",
-            "timestamp": time.time(),
-            "time_str": now_utc().strftime("%H:%M:%S"),
+            "timestamp": epoch_seconds(now_utc()),
+            "time_str": hhmmss(now_utc()),
             "symbols": summaries,
             "decisions": decisions,
             "market_indexes": market_indexes,
