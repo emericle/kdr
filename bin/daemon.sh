@@ -1,181 +1,175 @@
 #!/bin/bash
+# =============================================================================
+# KDR Daemon Service Manager (systemd-like interface)
+# =============================================================================
+# Provides a systemd-like interface for managing the KDR scraper as a daemon
+# on systems without systemd (e.g., Raspberry Pi OS Bullseye).
+#
+# Usage:
+#   bin/daemon.sh start    # Start the scraper in the background
+#   bin/daemon.sh stop     # Stop the running scraper
+#   bin/daemon.sh restart  # Restart the scraper
+#   bin/daemon.sh status   # Show current status
+#   bin/daemon.sh help     # Show this help
+#
+# The start/stop mechanics live in _start_common.sh, the same library the
+# foreground entry points use, so the two paths cannot disagree about the
+# PID file or the interpreter.
+# =============================================================================
 
-# KDR Daemon Script
-# Manages the KDR service as a background daemon
+KDR_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+source "$KDR_ROOT/bin/_start_common.sh"
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-if [ -f "${SCRIPT_DIR}/../requirements.txt" ]; then
-    PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
-elif [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
-    PROJECT_ROOT="${SCRIPT_DIR}"
-else
-    PROJECT_ROOT="$(pwd)"
-fi
+# Daemon log file (separate from the foreground log)
+LOG_FILE="${KDR_ROOT}/logs/kdr.log"
 
-cd "$PROJECT_ROOT"
+# =============================================================================
+# Status reporting
+# =============================================================================
 
-PID_FILE="${PROJECT_ROOT}/kdr.pid"
-# One rotating log: src/scraper.py caps it (RotatingFileHandler) and rotates it,
-# so a long running daemon cannot fill the disk with a per-run file.
-LOG_FILE="${PROJECT_ROOT}/logs/kdr.log"
+show_status() {
+    local PID=$(kdr_running_pid)
 
-# Function to start the daemon
-start_daemon() {
-    if [ -f "$PID_FILE" ]; then
-        local PID=$(cat "$PID_FILE")
-        if ps -p $PID > /dev/null 2>&1; then
-            echo "KDR service is already running (PID: $PID)"
-            echo "To stop it, run: ./bin/start.sh stop"
-            exit 0
-        else
-            echo "Removing stale PID file"
-            rm -f "$PID_FILE"
-        fi
-    fi
+    echo "KDR Daemon Status"
+    echo "================="
 
-    # Create log directory
-    mkdir -p "${PROJECT_ROOT}/logs"
+    if [ -n "$PID" ]; then
+        echo "SCRAPER: RUNNING (PID: $PID)"
+        echo "  Command: $(ps -p $PID -o args= 2>/dev/null | sed 's/^[[:space:]]*//')"
 
-    echo "Starting KDR Data Ingestion Pipeline..."
-    echo "Log file: $LOG_FILE"
-    echo ""
-
-    # Parse arguments
-    ARGS=()
-    if [ "$1" == "-d" ] || [ "$1" == "--debug" ]; then
-        ARGS+=("--debug")
-        echo "Debug mode enabled"
-    fi
-
-    # Set PYTHONPATH
-    export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-
-    # Fail visibly here rather than swallowing the error in the background: an
-    # import failure (missing .env, missing dependency) would otherwise be lost.
-    if ! IMPORT_ERROR=$(.venv/bin/python -c "import src.scraper" 2>&1); then
-        echo "scraper.py cannot be imported:"
-        echo "$IMPORT_ERROR"
-        exit 1
-    fi
-
-    # Start the process in background with daemon support. stdout and stderr go
-    # to /dev/null because src/scraper.py already writes every record to the
-    # rotating log; a second copy of the same stream is what grew logs/ to
-    # hundreds of megabytes.
-    nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >/dev/null 2>&1 &
-
-    PID=$!
-    echo $PID > "$PID_FILE"
-
-    echo "✓ KDR service started successfully (PID: $PID)"
-    echo ""
-    echo "Useful commands:"
-    echo "  Check status:   ./bin/daemon.sh status"
-    echo "  View logs:      tail -f $LOG_FILE"
-    echo "  Stop service:   ./bin/daemon.sh stop"
-}
-
-# Function to stop the daemon
-stop_daemon() {
-    if [ ! -f "$PID_FILE" ]; then
-        echo "No KDR service is running"
-        return 1
-    fi
-
-    local PID=$(cat "$PID_FILE")
-
-    if ! ps -p $PID > /dev/null 2>&1; then
-        echo "Process $PID is not running"
-        rm -f "$PID_FILE"
-        return 1
-    fi
-
-    echo "Stopping KDR service (PID: $PID)..."
-
-    # Send SIGTERM for graceful shutdown
-    kill -TERM $PID
-
-    # Wait for process to terminate
-    local count=0
-    while ps -p $PID > /dev/null 2>&1; do
-        sleep 1
-        count=$((count + 1))
-        if [ $count -ge 30 ]; then
-            echo "Process did not terminate gracefully, sending SIGKILL"
-            kill -KILL $PID
-            sleep 2
-            break
-        fi
-    done
-
-    # Clean up any lingering scraper processes and processes on port 8001
-    local STALE_PIDS=$(pgrep -f "python.*src/scraper.py" 2>/dev/null || true)
-    if [ -n "$STALE_PIDS" ]; then
-        echo "Cleaning up lingering scraper processes: $STALE_PIDS"
-        kill -9 $STALE_PIDS 2>/dev/null || true
-    fi
-
-    local PORT_PIDS=$(lsof -ti :8001 -sTCP:LISTEN 2>/dev/null || true)
-    if [ -n "$PORT_PIDS" ]; then
-        echo "Releasing port 8001 listener (PIDs: $PORT_PIDS)..."
-        kill -9 $PORT_PIDS 2>/dev/null || true
-    fi
-
-    rm -f "$PID_FILE"
-
-    echo "✓ KDR service stopped successfully"
-}
-
-# Function to show status
-status_daemon() {
-    if [ ! -f "$PID_FILE" ]; then
-        echo "KDR service is not running"
-        exit 1
-    fi
-
-    local PID=$(cat "$PID_FILE")
-
-    if ps -p $PID > /dev/null 2>&1; then
-        echo "KDR service is running"
-        echo "PID: $PID"
-
-        # The rotating log has a fixed name.
+        # Check log file
         if [ -f "$LOG_FILE" ]; then
-            echo "Log file: $LOG_FILE"
-            echo "Log file: $LOG_FILE"
-
-            # Show recent log entries
-            echo ""
-            echo "Recent log entries:"
-            tail -n 5 "$LOG_FILE"
+            echo "  Log file: $LOG_FILE ($(du -h "$LOG_FILE" | cut -f1))"
+            echo "  Last 5 log entries:"
+            tail -5 "$LOG_FILE" | sed 's/^/    /'
         fi
     else
-        echo "KDR service is not running (stale PID file)"
-        rm -f "$PID_FILE"
-        exit 1
+        echo "SCRAPER: STOPPED"
+    fi
+
+    # Check database connectivity
+    echo ""
+    echo "Database: Checking..."
+    if [ -f "${KDR_ROOT}/.env" ]; then
+        source "${KDR_ROOT}/.env"
+    fi
+
+    if [ -n "$DATABASE_URL" ]; then
+        if .venv/bin/python -c "
+import psycopg2
+try:
+    conn = psycopg2.connect('$DATABASE_URL', connect_timeout=5)
+    conn.close()
+    print('OK')
+except Exception as e:
+    print(f'FAILED: {e}')
+" 2>/dev/null | grep -q 'OK'; then
+            echo "Database: CONNECTED"
+        else
+            echo "Database: DISCONNECTED"
+        fi
+    else
+        echo "Database: NO DATABASE_URL"
     fi
 }
 
-# Main function to handle commands
+usage() {
+    echo "Usage: bin/daemon.sh COMMAND"
+    echo ""
+    echo "Commands:"
+    echo "  start    Start the scraper in the background"
+    echo "  stop     Stop the running scraper"
+    echo "  restart  Restart the scraper"
+    echo "  status   Show current status"
+    echo "  help     Show this help"
+    echo ""
+    echo "Options (with start):"
+    echo "  --debug  Enable verbose logging"
+    echo "  --dry-run  Run without placing orders"
+    echo ""
+    echo "Logs are written to logs/kdr.log"
+}
+
+# =============================================================================
+# Main command dispatcher
+# =============================================================================
+
 case "$1" in
     start)
-        start_daemon
+        shift
+        kdr_parse_args "$@" || exit 1
+
+        PID=$(kdr_running_pid)
+        if [ -n "$PID" ]; then
+            echo "already running (PID $PID); use restart to replace it"
+            exit 1
+        fi
+
+        kdr_check_interpreter || exit 1
+        kdr_preflight_import || exit 1
+
+        echo "Starting scraper..."
+        kdr_start_background "$LOG_FILE"
         ;;
     stop)
-        stop_daemon
+        PID=$(kdr_running_pid)
+        if [ -z "$PID" ]; then
+            echo "SCRAPER: STOPPED"
+            exit 0
+        fi
+
+        echo "Stopping KDR service (PID: $PID)..."
+
+        # Send SIGTERM for graceful shutdown
+        kill -TERM $PID
+
+        # Wait for process to terminate
+        local count=0
+        while ps -p $PID > /dev/null 2>&1; do
+            sleep 1
+            count=$((count + 1))
+            if [ $count -ge 30 ]; then
+                echo "Process did not terminate gracefully, sending SIGKILL"
+                kill -KILL $PID
+                sleep 2
+                break
+            fi
+        done
+
+        # Clean up any lingering scraper processes and processes on port 8001
+        local STALE_PIDS=$(pgrep -f "python.*src/scraper.py" 2>/dev/null || true)
+        if [ -n "$STALE_PIDS" ]; then
+            echo "Cleaning up lingering scraper processes: $STALE_PIDS"
+            kill -9 $STALE_PIDS 2>/dev/null || true
+        fi
+
+        local PORT_PIDS=$(lsof -ti:8001 2>/dev/null || true)
+        if [ -n "$PORT_PIDS" ]; then
+            echo "Cleaning up processes on port 8001: $PORT_PIDS"
+            kill -9 $PORT_PIDS 2>/dev/null || true
+        fi
+
+        echo "SCRAPER: STOPPED"
+        ;;
+    restart)
+        shift
+        kdr_parse_args "$@" || exit 1
+        echo "Restarting KDR service..."
+        kdr_stop_running >/dev/null 2>&1 || true
+        kdr_check_interpreter || exit 1
+        kdr_preflight_import || exit 1
+        echo "Starting scraper..."
+        kdr_start_background "$LOG_FILE"
         ;;
     status)
-        status_daemon
+        show_status
+        ;;
+    help|--help|-h)
+        usage
         ;;
     *)
-        echo "KDR Daemon Control Script"
-        echo ""
-        echo "Usage: $0 {start|stop|status}"
-        echo ""
-        echo "Commands:"
-        echo "  start    - Start KDR service in background"
-        echo "  stop     - Stop KDR service gracefully"
-        echo "  status   - Check KDR service status"
+        echo "Unknown command: $1"
+        usage
         exit 1
         ;;
 esac

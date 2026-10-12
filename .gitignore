@@ -1,6 +1,7 @@
 # Logs and PID
 logs/*.log
 *.log
+logs/kdr.log.*
 *.pid
 !logs/.gitkeep
 
