@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 from sqlalchemy import text
-from src.database import DatabaseManager, DatabaseConnection, get_database_url
+from src.database import DatabaseManager, DatabaseConnection, get_database_url, ModelWeightsModel
 import datetime
 import json
 
@@ -197,7 +197,6 @@ class TestDatabaseManager(unittest.TestCase):
         weights = {"w1": 0.8, "w2": 0.2, "w3": 0.5}
         
         session = self.db_manager.connection.get_session()
-        from src.database import ModelWeightsModel
         model_record = ModelWeightsModel(
             symbol=symbol, 
             last_trained=datetime.datetime.now(), 
@@ -211,21 +210,26 @@ class TestDatabaseManager(unittest.TestCase):
         self.assertEqual(retrieved, weights)
 
     def test_get_model_handles_non_json_weights(self):
+        """Real SQLAlchemy round-trip: malformed weights_json must yield None.
+
+        Deliberately un-mocked. A MagicMock chain accepts any attribute name, so
+        it would keep passing if get_model_weights were rewritten to call a
+        non-existent query method. Driving the real session instead means any
+        change to the query API fails this test.
+        """
         symbol = 'INVALID'
-        
-        mock_session = MagicMock()
-        mock_query = MagicMock()
-        mock_query.filter_by.return_value.first.return_value = MagicMock(weights_json="invalid json string")
-        
-        mock_session.query.return_value = mock_query
-        mock_session_factory = MagicMock(return_value=mock_session)
-        
-        with patch('src.database.get_database_url', return_value=self.db_url):
-            import src.database as db_mod
-            db_mod.DatabaseConnection.session_factory = mock_session_factory
-            
-            result = self.db_manager.get_model_weights(symbol)
-            self.assertIsNone(result)
+
+        session = self.db_manager.connection.get_session()
+        session.add(ModelWeightsModel(
+            symbol=symbol,
+            last_trained=datetime.datetime.now(),
+            weights_json="invalid json string"
+        ))
+        session.commit()
+        session.close()
+
+        result = self.db_manager.get_model_weights(symbol)
+        self.assertIsNone(result)
 
 class TestDatabaseInit(unittest.TestCase):
     def setUp(self):
@@ -400,12 +404,19 @@ class TestGetHistoricalMarketData(unittest.TestCase):
         self.db.add_market_data([{"symbol": "AAPL", "open": 100.0}])
 
     def test_get_model_weights_invalid_json(self):
-        from src.database import ModelWeightsModel
-        mock_session = MagicMock()
-        mock_record = MagicMock()
-        mock_record.weights_json = "invalid json {{"
-        mock_session.query.return_value.filter_by.return_value.first.return_value = mock_record
-        self.db.connection.get_session = MagicMock(return_value=mock_session)
+        """Real SQLAlchemy round-trip: malformed weights_json must yield None.
+
+        Un-mocked for the same reason as above: the mock chain never exercised
+        the real query API, so a typo in it would have stayed green.
+        """
+        session = self.db.connection.get_session()
+        session.add(ModelWeightsModel(
+            symbol="AAPL",
+            last_trained=datetime.datetime.now(),
+            weights_json="invalid json {{"
+        ))
+        session.commit()
+        session.close()
 
         res = self.db.get_model_weights("AAPL")
         self.assertIsNone(res)
