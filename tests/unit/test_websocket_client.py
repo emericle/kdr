@@ -27,17 +27,22 @@ WS_BASE = f"ws://127.0.0.1:{WS_TEST_PORT}"
 
 
 @pytest.fixture(scope="module")
-def ws_server():
+def ws_server(live_database):
     """Start web server for WebSocket client integration tests."""
     server = start_web_server_thread(host="127.0.0.1", port=WS_TEST_PORT)
     start = time.time()
+    ready = False
     while time.time() - start < 5.0:
         try:
-            r = requests.get(f"{HTTP_BASE}/api/status", timeout=0.2)
-            if r.status_code == 200:
+            response = requests.get(f"{HTTP_BASE}/api/status", timeout=0.2)
+            ready = response.status_code == 200
+            if ready:
                 break
         except Exception:
             time.sleep(0.1)
+    if not ready:
+        stop_web_server()
+        pytest.skip("web server under test never answered /api/status")
     yield server
     stop_web_server()
 

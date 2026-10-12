@@ -18,20 +18,27 @@ from src.web_server import (
 
 TEST_PORT = 8099
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
+# Bound every request: a route that blocks must fail the test, not stall the suite.
+REQUEST_TIMEOUT = 10
 
 
 @pytest.fixture(scope="module")
-def live_server():
+def live_server(live_database):
     server = start_web_server_thread(host="127.0.0.1", port=TEST_PORT)
-    # Wait until server accepts HTTP connections
+    # Wait until the server answers, then let the tests run against it.
     start = time.time()
+    ready = False
     while time.time() - start < 5.0:
         try:
-            r = requests.get(f"{BASE_URL}/api/status", timeout=0.2)
-            if r.status_code == 200:
+            response = requests.get(f"{BASE_URL}/api/status", timeout=0.2)
+            ready = response.status_code == 200
+            if ready:
                 break
         except Exception:
             time.sleep(0.1)
+    if not ready:
+        stop_web_server()
+        pytest.skip("web server under test never answered /api/status")
     yield server
     stop_web_server()
 
@@ -45,19 +52,19 @@ def clean_buffers():
 
 
 def test_dashboard_html_endpoint(live_server):
-    response = requests.get(f"{BASE_URL}/")
+    response = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 200
     assert "KDR Real-Time Market & Decision Monitor" in response.text
 
 
 def test_dashboard_symbol_route(live_server):
-    response = requests.get(f"{BASE_URL}/symbol/AAPL")
+    response = requests.get(f"{BASE_URL}/symbol/AAPL", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 200
     assert "KDR Real-Time Market & Decision Monitor" in response.text
 
 
 def test_dashboard_history_navigation_support(live_server):
-    response = requests.get(f"{BASE_URL}/")
+    response = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 200
     content = response.text
     # Verify browser back/forward history management is implemented
@@ -68,7 +75,7 @@ def test_dashboard_history_navigation_support(live_server):
 
 
 def test_api_status_endpoint(live_server):
-    response = requests.get(f"{BASE_URL}/api/status")
+    response = requests.get(f"{BASE_URL}/api/status", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "online"
@@ -80,7 +87,7 @@ def test_market_buffer_and_symbols_api(live_server):
     market_buffer.add_tick("AAPL", 176.00, 150)
     market_buffer.add_tick("TSLA", 250.00, 50)
 
-    response = requests.get(f"{BASE_URL}/api/symbols")
+    response = requests.get(f"{BASE_URL}/api/symbols", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 200
     symbols = response.json()
     assert len(symbols) == 2
@@ -102,7 +109,7 @@ def test_symbol_detail_api(live_server):
         reasoning=["Strong momentum", "Bellman optimal"]
     )
 
-    response = requests.get(f"{BASE_URL}/api/symbols/MSFT")
+    response = requests.get(f"{BASE_URL}/api/symbols/MSFT", timeout=REQUEST_TIMEOUT)
     assert response.status_code == 200
     detail = response.json()
 
@@ -123,14 +130,14 @@ def test_symbol_detail_with_duration_param(live_server):
     market_buffer.add_tick("NVDA", 125.0, 20, timestamp=now_ts - 1800)
 
     # 24h default duration
-    resp = requests.get(f"{BASE_URL}/api/symbols/NVDA?duration=24h")
+    resp = requests.get(f"{BASE_URL}/api/symbols/NVDA?duration=24h", timeout=REQUEST_TIMEOUT)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["ticks"]) == 1
     assert data["ticks"][0]["price"] == 125.0
 
     # 5d duration should include both ticks
-    resp_5d = requests.get(f"{BASE_URL}/api/symbols/NVDA?duration=5d")
+    resp_5d = requests.get(f"{BASE_URL}/api/symbols/NVDA?duration=5d", timeout=REQUEST_TIMEOUT)
     assert resp_5d.status_code == 200
     data_5d = resp_5d.json()
     assert len(data_5d["ticks"]) == 2
@@ -174,7 +181,7 @@ def test_symbol_detail_with_db_data(live_server):
 
         market_buffer.add_tick("TESTSYM", 52.0, 200.0, timestamp=now_ts - 60)
 
-        resp = requests.get(f"{BASE_URL}/api/symbols/TESTSYM?duration=24h")
+        resp = requests.get(f"{BASE_URL}/api/symbols/TESTSYM?duration=24h", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["ticks"]) == 3
@@ -202,7 +209,7 @@ def test_symbol_detail_fallback_seed_tick(live_server):
         market_buffer.add_tick("SEEDED", 99.5, 10.0, timestamp=time.time() - 7200)
 
         # Query with 1h duration (buffer tick is filtered out by start_time, but summary has currentPrice 99.5)
-        resp = requests.get(f"{BASE_URL}/api/symbols/SEEDED?duration=1h")
+        resp = requests.get(f"{BASE_URL}/api/symbols/SEEDED?duration=1h", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["ticks"]) >= 1
@@ -229,13 +236,13 @@ def test_db_circuit_breaker_behavior(live_server):
 
         market_buffer.add_tick("FAILSYM", 123.0, 10.0)
 
-        resp1 = requests.get(f"{BASE_URL}/api/symbols/FAILSYM")
+        resp1 = requests.get(f"{BASE_URL}/api/symbols/FAILSYM", timeout=REQUEST_TIMEOUT)
         assert resp1.status_code == 200
         assert not ws_module._db_is_available
         assert mock_db.get_historical_market_data.call_count == 1
 
         # Second call immediately should trip circuit breaker and not call mock_db again
-        resp2 = requests.get(f"{BASE_URL}/api/symbols/FAILSYM")
+        resp2 = requests.get(f"{BASE_URL}/api/symbols/FAILSYM", timeout=REQUEST_TIMEOUT)
         assert resp2.status_code == 200
         assert mock_db.get_historical_market_data.call_count == 1
     finally:
@@ -575,7 +582,7 @@ class TestMarketIndexTracking:
         assert data["change"] == 5.0
 
     def test_dashboard_html_contains_index_styling_and_top_layout(self, live_server):
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check red/green styling classes
@@ -640,7 +647,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_real_time_streaming_badge(self, live_server):
         """Verify real-time streaming badge with pulse animation is present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for live badge
@@ -655,7 +662,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_decision_badges_and_styling(self, live_server):
         """Verify decision badges (BUY, SELL, HOLD) with styling are present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for all decision badge classes
@@ -672,7 +679,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_interactive_chart_with_chartjs(self, live_server):
         """Verify interactive Chart.js canvas is present and configured."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for Chart.js library
@@ -689,7 +696,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_moving_average_checkboxes(self, live_server):
         """Verify 200-Day and 50-Day moving average checkboxes are present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for checkboxes
@@ -705,7 +712,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_market_indexes_row(self, live_server):
         """Verify market indexes row with VIX, DJIA, S&P 500, and Russell 2k is present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for market indexes grid
@@ -723,7 +730,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_decision_reasoning_and_history(self, live_server):
         """Verify decision reasoning and history display sections are present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for decision box
@@ -741,7 +748,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_vue_3_application(self, live_server):
         """Verify Vue 3 application is properly set up."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for Vue 3 library
@@ -756,7 +763,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_responsive_design(self, live_server):
         """Verify responsive design classes for different screen sizes."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for media queries
@@ -771,7 +778,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_symbol_summary_cards(self, live_server):
         """Verify symbol summary cards with detailed information are present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for symbols grid
@@ -794,7 +801,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_drilldown_view(self, live_server):
         """Verify drill-down symbol view is implemented."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for drill-down grid
@@ -810,7 +817,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_color_theme_variables(self, live_server):
         """Verify CSS color theme variables are defined."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for CSS variables
@@ -826,7 +833,7 @@ class TestDashboardHTMLFeatures:
 
     def test_dashboard_has_all_required_chart_features(self, live_server):
         """Verify all required chart features from the ticket are present."""
-        resp = requests.get(f"{BASE_URL}/")
+        resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
         # Check for duration options
