@@ -6,6 +6,22 @@ KDR is an automated trading system designed around a **Bellman Decision model** 
 
 ---
 
+## Configuration
+
+All credentials and endpoints come from `.env` in the repository root; nothing in `src/` carries a target of its own.
+
+| Variable | Required | Notes |
+| :--- | :--- | :--- |
+| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Yes | Alpaca data and trading credentials (`ALPACA_BASE_URL` optional, defaults to paper trading) |
+| `ADANOS_API_KEY` | Yes | Adanos sentiment API key |
+| `DATABASE_URL` | Yes | The database the system writes to |
+| `QA_DATABASE_URL` | No | Alternate database used when `SKIP_DB_TEST` is set or `USE_QA_DB` is true, so test traffic cannot reach a live book |
+
+`get_database_url` resolves in one order — explicit override, then the QA database under the test flags, then `DATABASE_URL` — and returns an empty string with a logged error when none of them resolve. Connecting with an empty URL raises; the system never falls back to a database the operator did not name. `config_gatekeeper.validate_configs()` refuses to start when a required variable is missing.
+
+---
+
+
 ## Core Components
 
 ### 1. Domain Models (`src/domain.py`)
@@ -33,6 +49,10 @@ Provides strictly validated Pydantic data schemas used across all components:
   - `AdanosSentimentAdapter`: Queries Adanos API for sentiment scores and correlates sentiment with price action.
 - **Persistence (`src/database.py`)**:
   - `DatabaseManager`: SQLAlchemy DeclarativeBase models with connection pooling and batched inserts (`session.add_all`) for high-throughput persistence.
+  - Timestamps are stored as UTC-aware values (`DateTime(timezone=True)`), so PostgreSQL keeps the offset and range queries stay correct across DST and timezones. On read, `DatabaseManager` normalizes whatever the row holds back to a UTC-aware `datetime` before comparing it with the caller's boundary.
+- **Time (`src/times.py`)**:
+  - Single source of truth for every timestamp in the system. `now_utc`, `to_utc`, `parse_iso`, `epoch_seconds`, `from_epoch`, `hhmmss` and `minute_bucket` are the only time primitives the other modules call; nothing in `src/` calls `datetime.now()`, `datetime.utcnow()` or `time.time()` directly.
+  - `to_utc` buckets numeric epochs by magnitude (nanoseconds above `1e15`, milliseconds above `1e12`, seconds below), so Alpaca's millisecond and nanosecond feeds keep their precision instead of being truncated. A naive `datetime` is read as UTC; a value that is not a timestamp at all raises `TypeError`, which adapters turn into a `ValueError` naming the offending input.
 
 ### 4. Trading Execution & Risk Management (`src/trading_execution.py`)
 - `PositionSizing`: Computes optimal trade sizes using the Kelly Criterion, bounded by a strict 20% portfolio capital allocation cap.
