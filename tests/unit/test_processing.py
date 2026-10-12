@@ -1,6 +1,7 @@
 import unittest
 from src.scraper import DataStreamBuffer
 import datetime
+from datetime import timezone
 
 class TestProcessing(unittest.TestCase):
     def test_buffer_logic(self):
@@ -24,7 +25,7 @@ class TestProcessing(unittest.TestCase):
         results = buffer.get_ready_bars(["AAPL"])
 
         self.assertIn("AAPL", results)
-        self.assertEqual(results["AAPL"]["timestamp"], "2023-01-01 12:00")
+        self.assertEqual(results["AAPL"]["timestamp"], datetime.datetime(2023, 1, 1, 12, 0, tzinfo=timezone.utc))
         self.assertEqual(results["AAPL"]["open"], 150.0)
         self.assertEqual(results["AAPL"]["high"], 151.0)
         self.assertEqual(results["AAPL"]["low"], 150.0)

@@ -6,34 +6,38 @@ import datetime
 import json
 
 class TestGetDatabaseURL(unittest.TestCase):
-    def test_default_url_when_no_environment_set(self):
+    """URL resolution is configuration-only: nothing is hardcoded in source."""
+
+    def test_returns_empty_when_nothing_is_configured(self):
         with patch.dict('os.environ', {}, clear=True):
-            result = get_database_url()
-            expected = "postgresql://slop:sloppyslop1!@localhost:5432/qa_instance"
-            self.assertEqual(result, expected)
+            self.assertEqual(get_database_url(), "")
 
     def test_override_url_when_provided(self):
         override = "sqlite:///test.db"
-        result = get_database_url(override_url=override)
-        self.assertEqual(result, override)
-
-    @patch.dict('os.environ', {'SKIP_DB_TEST': 'true'})
-    def test_qa_database_url_when_skip_flag_set(self):
-        result = get_database_url()
-        expected = "postgresql://slop:sloppyslop1!@localhost:5432/qa_instance"
-        self.assertEqual(result, expected)
-
-    @patch.dict('os.environ', {'USE_QA_DB': 'true'})
-    def test_qa_database_url_when_use_qa_flag_set(self):
-        result = get_database_url()
-        expected = "postgresql://slop:sloppyslop1!@localhost:5432/qa_instance"
-        self.assertEqual(result, expected)
+        self.assertEqual(get_database_url(override_url=override), override)
 
     @patch.dict('os.environ', {'DATABASE_URL': 'postgresql://custom:pass@custom:5432/custom'})
-    def test_custom_database_url_when_present(self):
-        result = get_database_url()
-        expected = "postgresql://custom:pass@custom:5432/custom"
-        self.assertEqual(result, expected)
+    def test_database_url_when_present(self):
+        self.assertEqual(get_database_url(), 'postgresql://custom:pass@custom:5432/custom')
+
+    @patch.dict('os.environ', {'USE_QA_DB': 'true', 'QA_DATABASE_URL': 'sqlite:///qa.db'})
+    def test_qa_database_url_when_opted_in(self):
+        self.assertEqual(get_database_url(), 'sqlite:///qa.db')
+
+    @patch.dict('os.environ', {'SKIP_DB_TEST': 'true', 'QA_DATABASE_URL': 'sqlite:///qa.db'})
+    def test_qa_database_url_when_skip_flag_set(self):
+        self.assertEqual(get_database_url(), 'sqlite:///qa.db')
+
+    @patch.dict('os.environ', {'USE_QA_DB': 'true'}, clear=True)
+    def test_qa_opt_in_without_qa_url_is_disabled(self):
+        """Opting in without configuring the QA database must not invent a target."""
+        self.assertEqual(get_database_url(), "")
+
+    @patch.dict('os.environ', {'DATABASE_URL': 'postgresql://main:pass@main:5432/main',
+                               'QA_DATABASE_URL': 'sqlite:///qa.db',
+                               'USE_QA_DB': 'true'})
+    def test_qa_url_takes_precedence_when_opted_in(self):
+        self.assertEqual(get_database_url(), 'sqlite:///qa.db')
 
     def test_sqlite_engine_for_memory_database(self):
         from sqlalchemy import create_engine
@@ -420,6 +424,22 @@ class TestGetHistoricalMarketData(unittest.TestCase):
 
         res = self.db.get_model_weights("AAPL")
         self.assertIsNone(res)
+
+
+class TestNoHardcodedCredentials(unittest.TestCase):
+    """A live QA password must not be recoverable from the repo."""
+
+    def test_database_source_contains_no_url_literal(self):
+        import re
+        from pathlib import Path
+        text = (Path(__file__).resolve().parents[2] / "src" / "database.py").read_text(encoding="utf-8")
+        literals = re.findall(r'["\']postgresql://[^"\']*["\']', text)
+        self.assertEqual(literals, [])
+
+    def test_env_example_documents_the_qa_variable(self):
+        from pathlib import Path
+        example = Path(__file__).resolve().parents[2] / ".env.example"
+        self.assertIn("QA_DATABASE_URL", example.read_text(encoding="utf-8"))
 
 
 if __name__ == '__main__':

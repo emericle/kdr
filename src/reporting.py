@@ -5,13 +5,14 @@ import uuid
 import logging
 from typing import List, Dict, Any
 from datetime import datetime
+from src.times import now_utc
 
 logger = logging.getLogger("Reporting")
 
 
 def get_dated_output_path(filename: str, base_dir: str = "outputs") -> str:
     """Returns a file path inside a date-stamped folder under base_dir (per README spec)."""
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = now_utc().strftime("%Y-%m-%d")
     folder = os.path.join(base_dir, date_str)
     os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, filename)
@@ -178,7 +179,7 @@ class ReportScheduler:
             "report_type": report_type,
             "interval_hours": interval_hours,
             "output_path": output_path,
-            "scheduled_at": datetime.now(),
+            "scheduled_at": now_utc(),
             "status": "scheduled"
         }
         return job_id

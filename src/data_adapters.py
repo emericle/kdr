@@ -1,8 +1,9 @@
 """Data adapters for transforming external API responses into internal domain models."""
 import logging
 from typing import Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime
 
+from src.times import to_utc
 from src.domain import MarketState, PortfolioState, FullState
 
 logger = logging.getLogger(__name__)
@@ -25,21 +26,10 @@ class AlpacaDataAdapter:
     @staticmethod
     def _normalize_timestamp(raw_ts: Any) -> datetime:
         """Helper to normalize string, datetime or numeric timestamp."""
-        if isinstance(raw_ts, datetime):
-            return raw_ts
-        if isinstance(raw_ts, str):
-            # Replace Z with +00:00 for ISO parsing
-            cleaned = raw_ts.replace('Z', '+00:00')
-            return datetime.fromisoformat(cleaned)
-        if isinstance(raw_ts, (int, float)):
-            # If greater than 1e11 assume nanoseconds/milliseconds, otherwise seconds
-            if raw_ts > 1e16:
-                return datetime.fromtimestamp(raw_ts / 1e9, tz=timezone.utc)
-            elif raw_ts > 1e11:
-                return datetime.fromtimestamp(raw_ts / 1e3, tz=timezone.utc)
-            else:
-                return datetime.fromtimestamp(raw_ts, tz=timezone.utc)
-        raise ValueError(f"Unsupported timestamp format: {raw_ts}")
+        try:
+            return to_utc(raw_ts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Unsupported timestamp format: {raw_ts}") from exc
 
     @staticmethod
     def parse_tick_data(tick_data: dict) -> Optional[dict]:

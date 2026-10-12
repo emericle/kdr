@@ -50,8 +50,8 @@ def _database_reachable(per_address_timeout: float = 1.0, deadline: float = 3.0)
 
     try:
         tail = url.split("://", 1)[1].split("@")[-1].split("?")[0].split("/")[0]
-        host, port = tail.rsplit(":", 1)
-        port = int(port)
+        host, port_str = tail.rsplit(":", 1)
+        port = int(port_str)
     except (IndexError, ValueError):
         return False
 

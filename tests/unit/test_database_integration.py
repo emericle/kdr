@@ -50,9 +50,12 @@ def fresh_db(db_url: str = SQLITE_URL) -> DatabaseManager:
     return db
 
 
-def _session(db: DatabaseManager) -> Optional[Session]:
-    """A real session, or None when the backend cannot provide one."""
-    return db.connection.get_session()
+def _session(db: DatabaseManager) -> Session:
+    """A real session; raises when the backend cannot provide one."""
+    session = db.connection.get_session()
+    if session is None:
+        raise AssertionError("the database backend returned no session")
+    return session
 
 
 def contract_model_weights_round_trip(db: DatabaseManager, symbol: str) -> None:
@@ -62,7 +65,7 @@ def contract_model_weights_round_trip(db: DatabaseManager, symbol: str) -> None:
     session.add(
         ModelWeightsModel(
             symbol=symbol,
-            last_trained=datetime.datetime.now(),
+            last_trained=datetime.datetime.now(datetime.timezone.utc),
             weights_json=json.dumps(weights),
         )
     )
@@ -83,7 +86,7 @@ def contract_model_weights_malformed_json(db: DatabaseManager, symbol: str) -> N
     session.add(
         ModelWeightsModel(
             symbol=symbol,
-            last_trained=datetime.datetime.now(),
+            last_trained=datetime.datetime.now(datetime.timezone.utc),
             weights_json="invalid json {{",
         )
     )
@@ -136,10 +139,10 @@ def contract_query_api_rejects_unknown_column(db: DatabaseManager) -> None:
 
 def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
     """A batched write must be readable back through the query API."""
-    bars = [
+    bars: list[dict] = [
         {
             "symbol": symbol,
-            "timestamp": datetime.datetime(2026, 10, 9, 13, 30),
+            "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.timezone.utc),
             "open": 101.0,
             "high": 102.0,
             "low": 100.0,
@@ -148,7 +151,7 @@ def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
         },
         {
             "symbol": symbol,
-            "timestamp": datetime.datetime(2026, 10, 9, 14, 0),
+            "timestamp": datetime.datetime(2026, 10, 9, 14, 0, tzinfo=datetime.timezone.utc),
             "open": 102.0,
             "high": 103.0,
             "low": 101.0,
@@ -168,9 +171,19 @@ def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
     if price != 101.5:
         raise AssertionError(f"get_price_at_timestamp returned {price!r}, expected 101.5")
 
-    interval = db.get_price_at_interval_start(symbol, "1H")
-    if not isinstance(interval, float):
-        raise AssertionError(f"get_price_at_interval_start returned {interval!r}, expected a float")
+    # The window is anchored to the latest bar, so the 13:30 bar opens it.
+    for duration in ("1h", "24h", "ytd"):
+        interval = db.get_price_at_interval_start(symbol, duration)
+        if not isinstance(interval, float):
+            raise AssertionError(
+                f"get_price_at_interval_start({symbol!r}, {duration!r}) returned {interval!r}, "
+                "expected a float"
+            )
+        if interval != 101.0:
+            raise AssertionError(
+                f"get_price_at_interval_start({symbol!r}, {duration!r}) returned {interval!r}, "
+                "expected 101.0 (the 13:30 UTC bar)"
+            )
 
 
 def contract_extra_columns_are_dropped(db: DatabaseManager, symbol: str) -> None:

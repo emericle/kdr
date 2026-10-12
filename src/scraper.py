@@ -3,13 +3,13 @@ import threading
 import queue
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 import sys
 import signal
 import argparse
 
-if sys.version_info < (3, 13):
-    print("Error: This application requires Python 3.13 or greater.")
+if sys.version_info < (3, 14):
+    print("Error: This application requires Python 3.14 or greater.")
     sys.exit(1)
 
 # Ensure project root is in sys.path when executed directly
@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from src.database import DatabaseManager
 from src.config_gatekeeper import validate_configs
 from src.state_mapper import StateMapper
+from src.times import epoch_minute, from_epoch, hhmmss, minute_key, now_utc, parse_iso, to_utc
 from src.symbols import (
     DEFAULT_SYMBOLS,
     normalize_symbols,
@@ -58,8 +59,7 @@ log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 os.makedirs(log_dir, exist_ok=True)
 
 # Log file with timestamp
-from datetime import datetime
-log_filename = os.path.join(log_dir, f"kdr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+log_filename = os.path.join(log_dir, f"kdr_{now_utc().strftime('%Y%m%d_%H%M%S')}.log")
 
 # Configure logging to both file and console
 logging.basicConfig(
@@ -100,25 +100,20 @@ class DataStreamBuffer:
 
     @staticmethod
     def _parse_timestamp(ts: Any) -> datetime:
-        if isinstance(ts, str):
-            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
-        if isinstance(ts, (int, float)):
-            if ts > 1e11:
-                return datetime.fromtimestamp(ts / 1e9, tz=timezone.utc)
-            return datetime.fromtimestamp(ts, tz=timezone.utc)
-        if isinstance(ts, datetime):
-            return ts
-        return datetime.now()
+        """Read a tick timestamp in any shape as a UTC datetime."""
+        if ts is None:
+            return now_utc()
+        return to_utc(ts)
 
     @staticmethod
     def _minute_bucket(ts: datetime) -> int:
-        """Returns integer epoch minute bucket for fast numerical comparisons."""
-        return int(ts.timestamp() // 60)
+        """Returns integer UTC epoch minute bucket for fast numerical comparisons."""
+        return epoch_minute(ts)
 
     @staticmethod
     def _minute_key(ts: datetime) -> str:
         """Minute key string generation."""
-        return f"{ts.year:04d}-{ts.month:02d}-{ts.day:02d} {ts.hour:02d}:{ts.minute:02d}"
+        return minute_key(ts)
 
     def add_tick(self, symbol: str, tick_data: dict) -> None:
         with self.lock:
@@ -156,7 +151,7 @@ class DataStreamBuffer:
     def get_ready_bars(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
         # Returns bars that are older than current minute in O(1) per ready bar using integer comparison.
         with self.lock:
-            now = datetime.now()
+            now = now_utc()
             current_bucket = self._minute_bucket(now)
             ready_data: Dict[str, Dict[str, Any]] = {}
             for symbol in symbols:
@@ -165,9 +160,9 @@ class DataStreamBuffer:
                 for bucket in list(self._running_bars[symbol].keys()):
                     if bucket < current_bucket:
                         bar = self._running_bars[symbol][bucket]
-                        minute_key = str(bar["key"])
+                        bar_key = str(bar["key"])
                         ready_data[symbol] = {
-                            "timestamp": minute_key,
+                            "timestamp": from_epoch(bucket * 60),
                             "open": bar["open"],
                             "high": bar["high"],
                             "low": bar["low"],
@@ -175,8 +170,8 @@ class DataStreamBuffer:
                             "volume": bar["volume"]
                         }
                         del self._running_bars[symbol][bucket]
-                        if symbol in self.buffer and minute_key in self.buffer[symbol]:
-                            del self.buffer[symbol][minute_key]
+                        if symbol in self.buffer and bar_key in self.buffer[symbol]:
+                            del self.buffer[symbol][bar_key]
             return ready_data
 
 class AlpacaStreamProcessor:
@@ -630,7 +625,7 @@ def run_worker_threads(
         if mock_fallback:
             for sym in resolved_symbols:
                 dummy_bar = {
-                    "timestamp": datetime.now(),
+                    "timestamp": now_utc(),
                     "open": 150.0,
                     "high": 160.0,
                     "low": 140.0,

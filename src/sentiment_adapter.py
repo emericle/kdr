@@ -2,6 +2,7 @@
 import logging
 from typing import List, Optional, Union
 from datetime import datetime
+from src.times import now_utc
 import os
 
 from src.domain import MarketState, FullState
@@ -52,7 +53,7 @@ class AdanosDataAdapter:
             # Mock sentiment response structure
             sentiment_record = {
                 'symbol': symbol.upper(),
-                'timestamp': datetime.now(),
+                'timestamp': now_utc(),
                 'score': 0.0,  # Will be populated by actual API
                 'source': 'adanos_api',
                 'timeframe': timeframe

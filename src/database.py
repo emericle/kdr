@@ -3,7 +3,7 @@ import os
 import json
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -11,23 +11,42 @@ from sqlalchemy.pool import QueuePool
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 
+from src.times import epoch_seconds, from_epoch, hhmmss, now_utc, parse_iso, to_utc
+
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-DEFAULT_QA_DATABASE_URL = "postgresql://slop:sloppyslop1!@localhost:5432/qa_instance"
-
 def get_database_url(override_url: Optional[str] = None) -> str:
+    """Resolve the database URL from configuration only.
+
+    Priority: explicit override, then ``DATABASE_URL``, then ``QA_DATABASE_URL``
+    (the test/QA database, used when tests opt in via ``USE_QA_DB``). Every value
+    comes from the environment or ``.env``; nothing is hardcoded, so a live
+    password can no longer be committed to this file.
+
+    Returns an empty string when nothing is configured, which makes
+    :class:`DatabaseConnection` report the problem and hand back ``None`` rather
+    than silently operating on someone else's database.
+    """
     if override_url:
         return override_url
+    qa_url = os.getenv("QA_DATABASE_URL", "")
     if os.getenv("SKIP_DB_TEST") or os.getenv("USE_QA_DB"):
-        return os.getenv("QA_DATABASE_URL", DEFAULT_QA_DATABASE_URL)
-    env_url = os.getenv("DATABASE_URL")
+        if not qa_url:
+            logger.error(
+                "QA_DATABASE_URL is not set; database operations are disabled. "
+                "Add it to .env to use the QA database."
+            )
+        return qa_url
+    env_url = os.getenv("DATABASE_URL", "")
     if not env_url:
-        logger.info("No DATABASE_URL found, using qa_instance database for operations.")
-        return DEFAULT_QA_DATABASE_URL
+        logger.info(
+            "No DATABASE_URL found in the environment or .env. Set DATABASE_URL "
+            "to enable database operations (or QA_DATABASE_URL for the test database)."
+        )
     return env_url
 
 DATABASE_URL = get_database_url()
@@ -81,7 +100,7 @@ class MarketDataModel(Base):
     __tablename__ = 'market_data'
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True)
-    timestamp = Column(DateTime, index=True)
+    timestamp = Column(DateTime(timezone=True), index=True)
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
@@ -93,7 +112,7 @@ class SentimentDataModel(Base):
     __tablename__ = 'sentiment_data'
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True)
-    timestamp = Column(DateTime)
+    timestamp = Column(DateTime(timezone=True))
     score = Column(Float)
     source = Column(String)
 
@@ -102,7 +121,7 @@ class ModelWeightsModel(Base):
     __tablename__ = 'model_weights'
     id = Column(Integer, primary_key=True)
     symbol = Column(String, unique=True)
-    last_trained = Column(DateTime)
+    last_trained = Column(DateTime(timezone=True))
     weights_json = Column(Text)
 
 MARKET_DATA_COLUMNS = {"symbol", "timestamp", "open", "high", "low", "close", "volume"}
@@ -156,7 +175,7 @@ class DatabaseManager:
                 MarketDataModel.symbol == symbol.upper()
             )
             if start_time is not None:
-                query = query.filter(MarketDataModel.timestamp >= start_time)
+                query = query.filter(MarketDataModel.timestamp >= to_utc(start_time))
             if limit:
                 # Retrieve the latest matching records ordered ascending efficiently
                 records = (
@@ -171,14 +190,14 @@ class DatabaseManager:
             return [
                 {
                     "symbol": r.symbol,
-                    "timestamp": r.timestamp.timestamp() if isinstance(r.timestamp, datetime) else r.timestamp,
+                    "timestamp": epoch_seconds(r.timestamp) if isinstance(r.timestamp, datetime) else r.timestamp,
                     "price": float(r.close if r.close is not None else r.open or 0.0),
                     "open": float(r.open or 0.0),
                     "high": float(r.high or 0.0),
                     "low": float(r.low or 0.0),
                     "close": float(r.close or 0.0),
                     "volume": float(r.volume or 0.0),
-                    "time_str": r.timestamp.strftime("%H:%M:%S") if isinstance(r.timestamp, datetime) else str(r.timestamp)
+                    "time_str": hhmmss(r.timestamp) if isinstance(r.timestamp, datetime) else str(r.timestamp)
                 }
                 for r in records
             ]
@@ -196,7 +215,7 @@ class DatabaseManager:
         try:
             query = session.query(MarketDataModel).filter(
                 MarketDataModel.symbol == symbol.upper(),
-                MarketDataModel.timestamp == target_timestamp
+                MarketDataModel.timestamp == to_utc(target_timestamp)
             ).first()
             if query:
                 return float(query.close if query.close is not None else query.open or 0.0)
@@ -236,8 +255,8 @@ class DatabaseManager:
             ).order_by(MarketDataModel.timestamp.desc()).first()
             if latest:
                 ts = latest.timestamp
-                ts_val = ts.timestamp() if isinstance(ts, datetime) else ts
-                time_str = ts.strftime("%H:%M:%S") if isinstance(ts, datetime) else str(ts)
+                ts_val = epoch_seconds(ts) if isinstance(ts, datetime) else ts
+                time_str = hhmmss(ts) if isinstance(ts, datetime) else str(ts)
                 price = float(latest.close if latest.close is not None else latest.open or 0.0)
                 return {
                     "symbol": latest.symbol,
@@ -269,7 +288,7 @@ class DatabaseManager:
         Returns:
             Price at the start of the interval, or None if not found
         """
-        now = datetime.now()
+        now = now_utc()
 
         session = self.connection.get_session()
         if not session:
@@ -283,7 +302,7 @@ class DatabaseManager:
             if not latest:
                 return None
 
-            latest_time = latest.timestamp if isinstance(latest.timestamp, datetime) else now
+            latest_time = to_utc(latest.timestamp) if isinstance(latest.timestamp, datetime) else now
             ref_end_time = now
 
             if duration == "1h":
@@ -309,7 +328,7 @@ class DatabaseManager:
                 target_time = ref_end_time - timedelta(days=365)
             elif duration == "ytd":
                 base_year = latest_time.year if (now - latest_time) > timedelta(days=365) else now.year
-                target_time = datetime(base_year, 1, 1)
+                target_time = datetime(base_year, 1, 1, tzinfo=timezone.utc)
             else:
                 target_time = now - timedelta(hours=24)
 

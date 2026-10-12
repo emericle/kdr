@@ -15,7 +15,8 @@ import threading
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from src.times import epoch_seconds, from_epoch, hhmmss, now_utc, parse_iso, to_utc
 from typing import Dict, List, Optional, Set, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -43,7 +44,7 @@ class MarketTick:
             "price": self.price,
             "size": self.size,
             "timestamp": self.timestamp,
-            "time_str": datetime.fromtimestamp(self.timestamp).strftime("%H:%M:%S")
+            "time_str": hhmmss(self.timestamp)
         }
 
 
@@ -63,7 +64,7 @@ class TradingDecision:
             "confidence": round(self.confidence, 2),
             "reasoning": self.reasoning,
             "timestamp": self.timestamp,
-            "time_str": datetime.fromtimestamp(self.timestamp).strftime("%H:%M:%S")
+            "time_str": hhmmss(self.timestamp)
         }
 
 
@@ -226,7 +227,7 @@ class IndexStore:
                     "change": 0.0,
                     "changePercent": 0.0,
                     "priceType": price_type,
-                    "lastUpdate": last_update or datetime.now().strftime("%H:%M:%S")
+                    "lastUpdate": last_update or now_utc().strftime("%H:%M:%S")
                 }
             item = self._indexes[index]
             prev_price = item.get("currentPrice") or current_price
@@ -253,7 +254,7 @@ class IndexStore:
 
             item["currentPrice"] = round(float(current_price), 2)
             item["priceType"] = price_type
-            item["lastUpdate"] = last_update or datetime.now().strftime("%H:%M:%S")
+            item["lastUpdate"] = last_update or now_utc().strftime("%H:%M:%S")
             self._save_unlocked()
 
     def get_index(self, index: str) -> Dict[str, Any]:
@@ -302,7 +303,7 @@ def update_index_from_tick(
     idx_key = SYMBOL_TO_INDEX_MAP.get(sym_upper)
     if not idx_key:
         return
-    time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+    time_str = hhmmss(timestamp)
     index_store.update_index(
         index=idx_key,
         current_price=price,
@@ -332,10 +333,7 @@ class MarketDataBuffer:
         symbol = symbol.upper()
         ts = time.time()
         if timestamp is not None:
-            if isinstance(timestamp, (int, float)):
-                ts = float(timestamp if timestamp < 1e11 else timestamp / 1e9)
-            elif isinstance(timestamp, datetime):
-                ts = timestamp.timestamp()
+            ts = epoch_seconds(timestamp)
 
         # Reject zero or negative price ticks to protect open price and calculations
         if float(price) <= 0:
@@ -399,7 +397,7 @@ class MarketDataBuffer:
                 latest_tick = max(reversed(history), key=lambda t: t.timestamp)
                 earliest_tick = min(history, key=lambda t: t.timestamp)
                 current_price = latest_tick.price
-                time_str = datetime.fromtimestamp(latest_tick.timestamp).strftime("%H:%M:%S")
+                time_str = hhmmss(latest_tick.timestamp)
 
                 if db and hasattr(db, 'get_price_at_interval_start'):
                     try:
@@ -593,7 +591,7 @@ class MarketDataBuffer:
                 "high": round(max(prices), 2),
                 "low": round(min(prices), 2),
                 "volume": round(total_vol, 2),
-                "lastUpdate": datetime.fromtimestamp(latest_tick.timestamp).strftime("%H:%M:%S")
+                "lastUpdate": hhmmss(latest_tick.timestamp)
             }
             result.update(dur_stats)
             return result
@@ -797,7 +795,7 @@ def compute_recommendation(symbol: str) -> Dict[str, Any]:
         "confidence": round(conf, 2),
         "reasoning": reasons,
         "timestamp": time.time(),
-        "time_str": datetime.now().strftime("%H:%M:%S")
+        "time_str": now_utc().strftime("%H:%M:%S")
     }
 
 
@@ -875,7 +873,7 @@ async def broadcast_loop(interval: float = 1.0):
             payload = {
                 "type": "update",
                 "timestamp": time.time(),
-                "time_str": datetime.now().strftime("%H:%M:%S"),
+                "time_str": now_utc().strftime("%H:%M:%S"),
                 "symbols": symbol_summaries,
                 "decisions": decisions,
                 "market_indexes": market_indexes,
@@ -985,7 +983,7 @@ async def get_market_index(index: str) -> Dict[str, Any]:
             open_p = market_buffer._open_prices.get(sym.upper(), tick.price)
             change = tick.price - open_p if open_p > 0 else 0.0
             change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
-            time_str = datetime.fromtimestamp(tick.timestamp).strftime("%H:%M:%S")
+            time_str = hhmmss(tick.timestamp)
             index_store.update_index(
                 index=index,
                 current_price=tick.price,
@@ -1016,7 +1014,7 @@ async def fetch_tracked_indexes() -> List[Dict[str, Any]]:
                 open_p = market_buffer._open_prices.get(sym.upper(), tick.price)
                 change = tick.price - open_p if open_p > 0 else 0.0
                 change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
-                time_str = datetime.fromtimestamp(tick.timestamp).strftime("%H:%M:%S")
+                time_str = hhmmss(tick.timestamp)
                 index_store.update_index(
                     index=idx,
                     current_price=tick.price,
@@ -1049,7 +1047,7 @@ async def get_symbol_detail(
     summary = market_buffer.get_summary(symbol, duration=duration or "24h")
 
     # Determine start_time based on requested duration window
-    now = datetime.now()
+    now = now_utc()
     start_time: Optional[datetime] = None
     if duration == "1h":
         start_time = now - timedelta(hours=1)
@@ -1062,7 +1060,7 @@ async def get_symbol_detail(
     elif duration == "1y":
         start_time = now - timedelta(days=365)
     elif duration == "ytd":
-        start_time = datetime(now.year, 1, 1)
+        start_time = datetime(now.year, 1, 1, tzinfo=timezone.utc)
 
     historical_ticks = []
     db = get_db_manager()
@@ -1104,7 +1102,7 @@ async def get_symbol_detail(
             "price": summary["currentPrice"],
             "size": summary.get("volume", 0.0),
             "timestamp": time.time(),
-            "time_str": datetime.now().strftime("%H:%M:%S")
+            "time_str": now_utc().strftime("%H:%M:%S")
         })
 
     decision = compute_recommendation(symbol)
@@ -1156,7 +1154,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({
             "type": "init",
             "timestamp": time.time(),
-            "time_str": datetime.now().strftime("%H:%M:%S"),
+            "time_str": now_utc().strftime("%H:%M:%S"),
             "symbols": summaries,
             "decisions": decisions,
             "market_indexes": market_indexes,
