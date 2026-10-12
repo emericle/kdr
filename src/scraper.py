@@ -3,6 +3,7 @@ import threading
 import queue
 import time
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 import sys
 import signal
@@ -60,21 +61,30 @@ DEBUG_MODE = False  # Default to false unless specified
 log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(log_dir, exist_ok=True)
 
-# Log file with timestamp
-log_filename = os.path.join(log_dir, f"kdr_{now_utc().strftime('%Y%m%d_%H%M%S')}.log")
+# One rotating log, not one file per run. The pipeline runs for days at a time
+# and a per-run file has been measured at 225 MB, so the log is capped and the
+# oldest copies are pushed aside instead of left to fill the disk.
+log_filename = os.path.join(log_dir, "kdr.log")
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
 
-# Configure logging to both file and console
+# Configure logging to both file and console. ``force=True`` because importing
+# src.database already ran a basicConfig: without it this call would be dropped
+# and the rotating file handler would never be installed.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_filename, encoding='utf-8')
-    ]
+        RotatingFileHandler(
+            log_filename, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding='utf-8'
+        ),
+    ],
+    force=True,
 )
 logger = logging.getLogger("DataIngestion")
 logger.info(f"Starting KDR Data Ingestion Pipeline")
-logger.info(f"Log file: {log_filename}")
+logger.info(f"Log file: {log_filename} (rotates at {LOG_MAX_BYTES} bytes, {LOG_BACKUP_COUNT} kept)")
 
 def setup_logging(debug: bool = False):
     global DEBUG_MODE

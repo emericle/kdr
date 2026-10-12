@@ -487,10 +487,15 @@ class MarketDataBuffer:
                             change_pct = (change / start_p * 100.0) if start_p > 0 else 0.0
 
                             dur_stats = {}
+                            starts = {}
+                            if hasattr(db, 'get_prices_at_interval_starts'):
+                                try:
+                                    starts = db.get_prices_at_interval_starts(symbol)
+                                except Exception as e:
+                                    logger.debug("Batched interval lookup failed: %s", e)
+                                    starts = {}
                             for dur in ["1h", "24h", "5d", "30d", "1y", "ytd"]:
-                                dur_start = None
-                                if hasattr(db, 'get_price_at_interval_start'):
-                                    dur_start = db.get_price_at_interval_start(symbol, dur)
+                                dur_start = starts.get(dur) if starts else None
                                 if dur_start is None or float(dur_start) <= 0:
                                     dur_start = start_p
                                 d_start = float(dur_start)
@@ -530,15 +535,16 @@ class MarketDataBuffer:
 
             # Calculate raw change and percentage change for all available durations
             dur_stats = {}
+            interval_starts: Dict[str, Optional[float]] = {}
+            if db:
+                if hasattr(db, 'get_prices_at_interval_starts'):
+                    try:
+                        interval_starts = db.get_prices_at_interval_starts(symbol)
+                    except Exception as e:
+                        logger.debug("Batched interval lookup for %s failed: %s", symbol, e)
+                        interval_starts = {}
             for dur in ["1h", "24h", "5d", "30d", "1y", "ytd"]:
-                interval_start_price = None
-                try:
-                    if db and hasattr(db, 'get_price_at_interval_start'):
-                        interval_start_price = db.get_price_at_interval_start(symbol, dur)
-                except Exception:
-                    pass
-
-                # Fallback to buffer tick if database lookup fails
+                interval_start_price = interval_starts.get(dur) if interval_starts else None
                 if interval_start_price is None:
                     interval_start_price = self._open_prices.get(symbol, earliest_tick.price)
 

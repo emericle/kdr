@@ -15,7 +15,9 @@ fi
 cd "$PROJECT_ROOT"
 
 PID_FILE="${PROJECT_ROOT}/kdr.pid"
-LOG_FILE="${PROJECT_ROOT}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
+# One rotating log: src/scraper.py caps it (RotatingFileHandler) and rotates it,
+# so a long running daemon cannot fill the disk with a per-run file.
+LOG_FILE="${PROJECT_ROOT}/logs/kdr.log"
 
 # Function to start the daemon
 start_daemon() {
@@ -48,8 +50,19 @@ start_daemon() {
     # Set PYTHONPATH
     export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
-    # Start the process in background with daemon support
-    nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
+    # Fail visibly here rather than swallowing the error in the background: an
+    # import failure (missing .env, missing dependency) would otherwise be lost.
+    if ! IMPORT_ERROR=$(.venv/bin/python -c "import src.scraper" 2>&1); then
+        echo "scraper.py cannot be imported:"
+        echo "$IMPORT_ERROR"
+        exit 1
+    fi
+
+    # Start the process in background with daemon support. stdout and stderr go
+    # to /dev/null because src/scraper.py already writes every record to the
+    # rotating log; a second copy of the same stream is what grew logs/ to
+    # hundreds of megabytes.
+    nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >/dev/null 2>&1 &
 
     PID=$!
     echo $PID > "$PID_FILE"
@@ -126,9 +139,9 @@ status_daemon() {
         echo "KDR service is running"
         echo "PID: $PID"
 
-        # Find the latest log file
-        LOG_FILE=$(ls -t "${PROJECT_ROOT}"/logs/kdr_*.log 2>/dev/null | head -1)
-        if [ -n "$LOG_FILE" ]; then
+        # The rotating log has a fixed name.
+        if [ -f "$LOG_FILE" ]; then
+            echo "Log file: $LOG_FILE"
             echo "Log file: $LOG_FILE"
 
             # Show recent log entries

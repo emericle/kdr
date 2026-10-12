@@ -776,6 +776,40 @@ class TestSetupLogging:
         assert True
 
 
+class TestRotatingLogFile:
+    """The pipeline logs to one size-capped file, not one file per run."""
+
+    def test_log_file_name_is_fixed(self):
+        """The log path has no run timestamp, so runs share one file."""
+        import src.scraper as scraper_module
+
+        assert scraper_module.log_filename.endswith("kdr.log")
+        assert scraper_module.LOG_MAX_BYTES > 0
+        assert scraper_module.LOG_BACKUP_COUNT > 0
+
+    def test_installed_handler_rotates(self):
+        """Importing the pipeline installs the capped handler, not a plain one.
+
+        ``src.database`` runs a ``basicConfig`` at import, so a second
+        ``basicConfig`` without ``force=True`` is dropped and the file handler
+        never reaches the root logger; the log then grows without bound.
+        """
+        import logging
+        import logging.handlers
+        import src.scraper as scraper_module
+
+        ours = [
+            handler
+            for handler in logging.root.handlers
+            if getattr(handler, "baseFilename", None) == scraper_module.log_filename
+        ]
+        assert ours, f"no handler writes to {scraper_module.log_filename}"
+        handler = ours[0]
+        assert isinstance(handler, logging.handlers.RotatingFileHandler), type(handler)
+        assert handler.maxBytes == scraper_module.LOG_MAX_BYTES
+        assert handler.backupCount == scraper_module.LOG_BACKUP_COUNT
+
+
 class TestRunWorkerThreads:
     """Tests for run_worker_threads function."""
     

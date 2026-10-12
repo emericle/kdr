@@ -168,7 +168,9 @@ echo -e "${YELLOW}[4/4]${NC} Starting KDR service in background..."
 mkdir -p logs
 
 # Create PID file for process management
-LOG_FILE="${PROJECT_ROOT}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
+# One rotating log: src/scraper.py caps it and rotates it, so a long running
+# service cannot fill the disk with a per-run file.
+LOG_FILE="${PROJECT_ROOT}/logs/kdr.log"
 
 # Parse arguments for the main process
 ARGS=()
@@ -190,6 +192,14 @@ done
 # Set PYTHONPATH to include the project root for module imports
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# Fail visibly if the pipeline cannot even be imported; the background run
+# below sends its output to the rotating log, not to a terminal.
+if ! IMPORT_ERROR=$(PYTHONPATH="${PYTHONPATH}:$(pwd)" .venv/bin/python -c "import src.scraper" 2>&1); then
+    echo -e "${RED}✗ scraper.py cannot be imported:${NC}"
+    echo "$IMPORT_ERROR"
+    exit 1
+fi
+
 # Start the process in background and redirect output to log file
 echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
 echo -e "${BLUE}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
@@ -197,7 +207,10 @@ echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & d
 echo ""
 
 # Run the main process in background
-nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >> "$LOG_FILE" 2>&1 &
+# stdout and stderr go to /dev/null: src/scraper.py writes every log record to
+# the rotating file itself, and a second copy of the same stream is what grew
+# logs/ past hundreds of megabytes.
+nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >/dev/null 2>&1 &
 PID=$!
 
 # Save PID
