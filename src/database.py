@@ -72,7 +72,6 @@ def get_database_url(override_url: str | None = None) -> str:
         )
     return env_url
 
-DATABASE_URL = get_database_url()
 
 class DatabaseConnection:
     """Handles the underlying SQL connection and session factory."""
