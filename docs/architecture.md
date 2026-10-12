@@ -45,6 +45,26 @@ Two policies are enforced by that config rather than by review comments:
   the blocking stream loop, the dashboard's start/stop, one websocket connection,
   one broadcast tick) where the alternative is to end the process; each carries a
   comment saying so.
+- **One start, four questions.** `bin/_start_common.sh` owns the mechanics of
+  putting the pipeline in the background — the PID file (`logs/kdr.pid`), the
+  interpreter (`.venv/bin/python`), the argument parser, the pre-flight import — and
+  `bin/start.sh`, `bin/daemon.sh`, `bin/local-start.sh` and `bin/local-stop.sh` source
+  it. The scripts answer different questions for a user; they must not answer them
+  with different mechanics, because a run started by one was otherwise stopped
+  cleanly only when a different one was told to stop it.
+
+Two more rules the suite and the logs depend on:
+
+- **A test does not leave a thread behind.** `run_worker_threads` starts the
+  dashboard's uvicorn thread, and the pipeline's unit tests patch
+  `_start_dashboard` so nothing outlives the test that started it. A daemon thread
+  still logging while CPython finalizes races the stderr buffer lock, which printed
+  a fatal error after an otherwise green run; joining what survived only kept it
+  logging longer, which is why that attempt made the flake more frequent.
+- **One logger name per layer.** Each module takes its own name, so a reviewer can
+  tell `src.web_server.data_layer` from `src.web_server.api_layer` in the log. The
+  pipeline modules deliberately share `DataIngestion`, because there the name is
+  saying that one stream is one stream.
 
 ---
 
