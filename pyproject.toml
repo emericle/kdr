@@ -40,7 +40,7 @@ ignore = ["E402", "PT009", "PT011", "PT027", "SIM105", "UP036"]
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.13"
 warn_unused_configs = true
 
 # plotly and the Alpaca client ship no type information, so mypy cannot see

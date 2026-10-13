@@ -1,6 +1,6 @@
 # KDR
 
-A Python 3.14-powered trading engine that leverages a **Bellman decision model** to optimize equity portfolio actions (Buy, Sell, Hold) using real-time market data, volatility, and sentiment indicators.
+A Python 3.13-powered trading engine that leverages a **Bellman decision model** to optimize equity portfolio actions (Buy, Sell, Hold) using real-time market data, volatility, and sentiment indicators.
 
 ---
 
@@ -21,7 +21,7 @@ A Python 3.14-powered trading engine that leverages a **Bellman decision model**
 
 ## Requirements
 
-- **Python 3.14+** (Required)
+- **Python 3.13+** (Required)
 - **PostgreSQL Database**
 - **Alpaca Markets Account** (API Key & Secret)
 - **Adanos API Account** (Sentiment API Key)
@@ -32,7 +32,7 @@ A Python 3.14-powered trading engine that leverages a **Bellman decision model**
 
 ### 1. Quick Start
 
-Run the automated startup script, which validates Python 3.14, configures the virtual environment, verifies dependencies, and launches the pipeline:
+Run the automated startup script, which validates Python 3.13, configures the virtual environment, verifies dependencies, and launches the pipeline:
 
 ```bash
 # Unix / macOS
@@ -47,8 +47,8 @@ bin\start.bat --debug       # Verbose debug logging
 ### 2. Manual Setup
 
 ```bash
-# 1. Create and activate a Python 3.14 virtual environment
-python3.14 -m venv .venv
+# 1. Create and activate a Python 3.13 virtual environment
+python3.13 -m venv .venv
 source .venv/bin/activate       # On Windows: .venv\Scripts\activate
 
 # 2. Install dependencies
@@ -136,6 +136,13 @@ python bin/check_env.py
 # Run pre-flight startup validations
 ./tests/test_startup.sh
 ```
+
+`bin/check_env.py` is the single source of truth for which environment variables
+are required: it owns the list (`REQUIRED_VARS`) and exposes `required_keys()`/
+`missing_keys()` plus a `--keys` flag that prints one key per line. `src/config_gatekeeper.py`
+loads that file and reads the list from it rather than restating it, and the shell
+entry points (`bin/local-start.sh`, `bin/setup_wizard.sh`) and `bin/start.bat` read
+the same `--keys` output, so the list cannot drift apart.
 
 ---
 
@@ -320,7 +327,7 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 
 | Issue | Cause | Resolution |
 | :--- | :--- | :--- |
-| `Python 3.14 is not installed` | Missing or mismatched Python version | Install Python 3.14 (`brew install python@3.14`) and ensure `.venv` uses `python3.14`. |
+| `No …/.venv/bin/python: create the virtualenv first` | The project virtualenv is missing or unusable | Create it with `bin/start.sh`, or `python3.13 -m venv .venv` (`brew install python@3.13` if Python 3.13 is not installed). |
 | `ModuleNotFoundError: No module named 'src'` | Project root not in `PYTHONPATH` | Run using `./bin/start.sh` or export `PYTHONPATH="${PYTHONPATH}:$(pwd)"`. |
 | `AuthenticationError` | Invalid Alpaca or Adanos credentials | Verify keys in `.env` or run `python bin/check_env.py`. |
 | `DatabaseConnectionError` / `pg_isready` failure | PostgreSQL service is offline | Verify PostgreSQL is running (`brew services start postgresql`) and check `DATABASE_URL`. |

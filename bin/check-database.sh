@@ -7,7 +7,10 @@ set -e
 
 # Configuration
 DATABASE_URL="${DATABASE_URL:-postgresql://user:password@localhost:5432/kdr}"
-PYTHON_CMD="python3.14"
+# The application needs psycopg2, which is installed only in the project's own
+# virtualenv, so run it with that interpreter rather than a versioned binary.
+KDR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_CMD="${KDR_ROOT}/.venv/bin/python"
 SCRIPT_PATH="${SCRIPT_PATH:-$PWD}"
 
 # Colors for output
@@ -29,9 +32,9 @@ print_warning() {
     echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
 
-# Check if Python 3.14 is installed
-if ! command -v $PYTHON_CMD &> /dev/null; then
-    print_error "Python 3.14 is not installed. Please install it first."
+# The application needs psycopg2, which lives only in the project's own virtualenv.
+if ! command -v "$PYTHON_CMD" &> /dev/null; then
+    print_error "No $PYTHON_CMD: create the virtualenv first (bin/start.sh does it)."
     exit 1
 fi
 
@@ -44,7 +47,7 @@ $PYTHON_CMD -c "import psycopg2" 2>/dev/null || {
 
 # Test database connection
 print_status "Testing database connection..."
-python3.14 -c "
+$PYTHON_CMD -c "
 import sys
 try:
     from src.database import DatabaseManager
@@ -64,7 +67,7 @@ except Exception as e:
 
 # Create database tables if needed
 print_status "Setting up database schema..."
-python3.14 -c "
+$PYTHON_CMD -c "
 from src.database import DatabaseManager
 db = DatabaseManager()
 db.connection.init_db()

@@ -1,27 +1,46 @@
 #!/usr/bin/env python3
 """
 Environment variable checker utility.
-Shows the status of all required environment variables.
+
+This file is the single source of truth for which environment variables the
+system requires. ``src/config_gatekeeper.py`` and the shell entry points read
+the list from here (via ``required_keys()`` / the ``--keys`` flag) rather than
+restating it, so the list cannot drift apart. It deliberately imports nothing
+from ``src/`` so it stays standalone.
 """
 
 import os
+import sys
 
-def check_environment():
+# The one place that decides which environment variables are required. Everything
+# else reads this list instead of restating it.
+REQUIRED_VARS: dict[str, str] = {
+    "ADANOS_API_KEY": "Adanos AI API Key",
+    "ALPACA_API_KEY": "Alpaca API Key",
+    "ALPACA_SECRET_KEY": "Alpaca Secret Key",
+    "DATABASE_URL": "PostgreSQL Database URL",
+}
+
+
+def required_keys() -> list[str]:
+    """The environment variables the system requires, in declaration order."""
+    return list(REQUIRED_VARS)
+
+
+def missing_keys() -> list[str]:
+    """Required keys that are unset (or set empty) in the current environment."""
+    return [key for key in REQUIRED_VARS if not os.getenv(key)]
+
+
+def check_environment() -> bool:
     """Check and display all required environment variables."""
     print("=" * 60)
     print("KDR Environment Variable Status")
     print("=" * 60)
     print()
 
-    required_vars = {
-        "ADANOS_API_KEY": "Adanos AI API Key",
-        "ALPACA_API_KEY": "Alpaca API Key",
-        "ALPACA_SECRET_KEY": "Alpaca Secret Key",
-        "DATABASE_URL": "PostgreSQL Database URL"
-    }
-
     all_present = True
-    for key, description in required_vars.items():
+    for key, description in REQUIRED_VARS.items():
         value = os.getenv(key)
         if value:
             # Mask sensitive values
@@ -56,7 +75,14 @@ def check_environment():
         print("2. Edit .env and fill in your actual credentials")
         return False
 
+
 if __name__ == "__main__":
-    import sys
+    # `--keys` lets the shell entry points read the required list without
+    # restating it: one key per line, always exit 0.
+    if "--keys" in sys.argv[1:]:
+        for key in required_keys():
+            print(key)
+        sys.exit(0)
+
     success = check_environment()
     sys.exit(0 if success else 1)

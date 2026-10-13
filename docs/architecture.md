@@ -2,7 +2,7 @@
 
 ## Overview
 
-KDR is an automated trading system designed around a **Bellman Decision model** to manage equity portfolios. The system runs on Python 3.14+, persisting market data in PostgreSQL, streaming live market data from Alpaca, incorporating sentiment analysis from Adanos, and rendering a real-time monitoring dashboard via FastAPI and WebSockets.
+KDR is an automated trading system designed around a **Bellman Decision model** to manage equity portfolios. The system runs on Python 3.13+, persisting market data in PostgreSQL, streaming live market data from Alpaca, incorporating sentiment analysis from Adanos, and rendering a real-time monitoring dashboard via FastAPI and WebSockets.
 
 ---
 
@@ -19,7 +19,7 @@ All credentials and endpoints come from `.env` in the repository root; nothing i
 | `KDR_STATE_VECTOR_SCHEMA` | No | `normalized` (default) or `legacy`; chooses the state vector layout so a run can be compared against the pre-normalization model |
 | `BACKTEST_SYMBOLS` / `BACKTEST_CASH` / `BACKTEST_MINUTES` | No | Only read by `python -m src.backtest`: the symbols to replay, the paper portfolio's starting cash (default 100000) and the window of stored bars to replay (default 1440 minutes) |
 
-`get_database_url` resolves in one order — explicit override, then the QA database under the test flags, then `DATABASE_URL` — and returns an empty string with a logged error when none of them resolve. Connecting with an empty URL raises; the system never falls back to a database the operator did not name. `config_gatekeeper.validate_configs()` refuses to start when a required variable is missing.
+`get_database_url` resolves in one order — explicit override, then the QA database under the test flags, then `DATABASE_URL` — and returns an empty string with a logged error when none of them resolve. Connecting with an empty URL raises; the system never falls back to a database the operator did not name. `bin/check_env.py` is the single source of truth for which variables are required: it owns the `REQUIRED_VARS` list and exposes `required_keys()`/`missing_keys()` and a `--keys` flag. `config_gatekeeper.validate_configs()` loads that file and reads the list from it rather than restating it, so the gate and the checker cannot drift apart; it refuses to start when a required variable is missing.
 
 ---
 

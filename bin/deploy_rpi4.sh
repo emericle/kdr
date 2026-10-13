@@ -22,7 +22,14 @@ WEB_ROOT="/var/www/html"
 FRONTEND_DIR="${WEB_ROOT}/kdr"
 BACKEND_DIR="${FRONTEND_DIR}/backend"
 SERVICE_NAME="kdr"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The project root, resolved from this script's own location rather than the
+# caller's cwd, so the script works from any directory. It used to treat the
+# directory it lives in as the root, which was only true while it sat at the
+# repo root; after the executables moved into bin/ every "${SCRIPT_DIR}/..."
+# path pointed into bin/ and the preflight failed on bin/.env.
+KDR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_DIR="${KDR_ROOT}/bin"
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║            KDR Deployment to Raspberry Pi 4             ║${NC}"
@@ -38,12 +45,12 @@ echo ""
 # ------------------------------------------------------------------------------
 echo -e "${YELLOW}[1/7]${NC} Checking local prerequisites and target host connectivity..."
 
-if [ ! -f "${SCRIPT_DIR}/.env" ]; then
-    echo -e "${RED}Error: .env file not found in ${SCRIPT_DIR}.${NC}"
+if [ ! -f "${KDR_ROOT}/.env" ]; then
+    echo -e "${RED}Error: .env file not found in ${KDR_ROOT}.${NC}"
     exit 1
 fi
 
-if ! grep -q "pinky.local" "${SCRIPT_DIR}/.env"; then
+if ! grep -q "pinky.local" "${KDR_ROOT}/.env"; then
     echo -e "${YELLOW}Warning: DATABASE_URL does not explicitly reference pinky.local.${NC}"
 else
     echo -e "${GREEN}✓ Verified DATABASE_URL points to pinky.local${NC}"
@@ -73,11 +80,11 @@ echo -e "${GREEN}✓ Remote directories created with correct ownership${NC}"
 echo -e "${YELLOW}[3/7]${NC} Deploying frontend to ${FRONTEND_DIR}..."
 
 # Copy dashboard.html as index.html
-scp "${SCRIPT_DIR}/src/static/dashboard.html" "${TARGET_HOST}:${FRONTEND_DIR}/index.html"
+scp "${KDR_ROOT}/src/static/dashboard.html" "${TARGET_HOST}:${FRONTEND_DIR}/index.html"
 
 # Copy any additional static assets if present
-if [ -d "${SCRIPT_DIR}/src/static" ]; then
-    rsync -avz --exclude="dashboard.html" "${SCRIPT_DIR}/src/static/" "${TARGET_HOST}:${FRONTEND_DIR}/" || true
+if [ -d "${KDR_ROOT}/src/static" ]; then
+    rsync -avz --exclude="dashboard.html" "${KDR_ROOT}/src/static/" "${TARGET_HOST}:${FRONTEND_DIR}/" || true
 fi
 
 echo -e "${GREEN}✓ Frontend deployed to ${FRONTEND_DIR}/index.html${NC}"
@@ -87,6 +94,9 @@ echo -e "${GREEN}✓ Frontend deployed to ${FRONTEND_DIR}/index.html${NC}"
 # ------------------------------------------------------------------------------
 echo -e "${YELLOW}[4/7]${NC} Deploying backend to ${BACKEND_DIR}..."
 
+# The payload is the project root's src/, requirements.txt and data/, plus the
+# two entry scripts. Those scripts live in bin/ now but land at BACKEND_DIR's
+# root, which is the layout the systemd service and the remote scripts expect.
 rsync -avz --delete \
     --exclude=".venv" \
     --exclude="__pycache__" \
@@ -95,19 +105,19 @@ rsync -avz --delete \
     --exclude="tests" \
     --exclude="logs/*" \
     --exclude=".git" \
-    "${SCRIPT_DIR}/src" \
-    "${SCRIPT_DIR}/requirements.txt" \
-    "${SCRIPT_DIR}/start.sh" \
-    "${SCRIPT_DIR}/daemon.sh" \
+    "${KDR_ROOT}/src" \
+    "${KDR_ROOT}/requirements.txt" \
+    "${BIN_DIR}/start.sh" \
+    "${BIN_DIR}/daemon.sh" \
     "${TARGET_HOST}:${BACKEND_DIR}/"
 
 # Sync data directory if it exists (for cache persistence)
-if [ -d "${SCRIPT_DIR}/data" ]; then
-    rsync -avz "${SCRIPT_DIR}/data/" "${TARGET_HOST}:${BACKEND_DIR}/data/"
+if [ -d "${KDR_ROOT}/data" ]; then
+    rsync -avz "${KDR_ROOT}/data/" "${TARGET_HOST}:${BACKEND_DIR}/data/"
 fi
 
 # Securely copy .env with database credentials pointing to pinky.local
-scp "${SCRIPT_DIR}/.env" "${TARGET_HOST}:${BACKEND_DIR}/.env"
+scp "${KDR_ROOT}/.env" "${TARGET_HOST}:${BACKEND_DIR}/.env"
 
 echo -e "${GREEN}✓ Backend code and configuration synced${NC}"
 
@@ -120,27 +130,24 @@ ssh "${TARGET_HOST}" "bash -s" <<'REMOTE_SETUP'
 set -euo pipefail
 cd /var/www/html/kdr/backend
 
-# Detect Python version (3.14, 3.13, or python3)
-PYTHON_BIN=""
-if command -v python3.14 &> /dev/null; then
-    PYTHON_BIN="python3.14"
+# Python policy: 3.13 or greater. Prefer the existing virtualenv; otherwise
+# create one from python3.13, and fail if no interpreter new enough is present.
+if [ -x ".venv/bin/python" ]; then
+    PYTHON_BIN=".venv/bin/python"
 elif command -v python3.13 &> /dev/null; then
-    PYTHON_BIN="python3.13"
-elif command -v python3 &> /dev/null; then
-    PYTHON_BIN="python3"
-fi
-
-if [ -z "$PYTHON_BIN" ]; then
-    echo "Error: Python 3 not found on target host."
+    echo "Creating virtual environment at .venv..."
+    python3.13 -m venv .venv
+    PYTHON_BIN=".venv/bin/python"
+elif command -v python3 &> /dev/null && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null; then
+    echo "Creating virtual environment at .venv..."
+    python3 -m venv .venv
+    PYTHON_BIN=".venv/bin/python"
+else
+    echo "Error: Python 3.13 or greater not found on target host."
     exit 1
 fi
 
 echo "Using Python binary: $PYTHON_BIN"
-
-if [ ! -d ".venv" ]; then
-    echo "Creating virtual environment at .venv..."
-    $PYTHON_BIN -m venv .venv
-fi
 
 echo "Installing/updating dependencies..."
 .venv/bin/pip install --upgrade pip > /dev/null 2>&1

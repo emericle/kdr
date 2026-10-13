@@ -36,10 +36,10 @@ def test_required_env_vars():
 
 
 def test_python_version():
-    """Test that Python 3.14+ is available."""
-    if sys.version_info < (3, 14):
-        print(f"❌ Python version {sys.version} is too old. Requires 3.14+")
-        raise AssertionError(f"Python version {sys.version} is too old. Requires 3.14+")
+    """Test that Python 3.13+ is available."""
+    if sys.version_info < (3, 13):
+        print(f"❌ Python version {sys.version} is too old. Requires 3.13+")
+        raise AssertionError(f"Python version {sys.version} is too old. Requires 3.13+")
     print(f"✅ Python version {sys.version_info.major}.{sys.version_info.minor} is compatible")
 
 

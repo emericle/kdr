@@ -4,7 +4,7 @@ This file contains context-rich, high-signal instructions to help agents navigat
 
 ## Core Context
 - **Domain:** Financial Market Trading.
-- **Technology:** Python 3.14+, PostgreSQL, Alpaca, Adanos.
+- **Technology:** Python 3.13+, PostgreSQL, Alpaca, Adanos.
 - **Key Logic:** Employs a Bellman Decision model to manage an equity portfolio.
 
 ## Project Structure & Entrypoints
@@ -19,7 +19,7 @@ This file contains context-rich, high-signal instructions to help agents navigat
 - **Database Init:** The system initializes the database on startup via `db_manager.connection.init_db()`. Ensure the `DATABASE_URL` is correct in `.env` before the first run.
 
 ## Specific Quirks & Rules
-- **Python 3.14:** The application explicitly checks for version 3.14. Ensure the environment is correctly configured as `python3.14`.
+- **Python 3.13:** The application explicitly checks for version 3.13. Ensure the environment is correctly configured as `python3.13`.
 - **Thread Safety:** The `DataStreamBuffer` in `src/scraper.py` uses a thread-safe lock for managing tick buffers.
 - **Environment:** The `.env` file is critical. It contains Alpaca, Adanos, and Database credentials.
 - **Execution Flow:** Data flows from **Alpaca Stream** -> **Buffer** -> **DBWriterWorker** -> **PostgreSQL**.

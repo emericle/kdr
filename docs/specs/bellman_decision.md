@@ -12,7 +12,7 @@ Implement a Bellman Decision model for portfolio management. This involves:
 5.  Validating the implementation via backtesting.
 
 ## Requirements
-- **Python Version**: Must run on Python 3.14+.
+- **Python Version**: Must run on Python 3.13+.
 - **Data Sources**: Integrates with Alpaca for market data and Adanos for specific financial signals.
 - **Database**: Persists training and results in PostgreSQL.
 

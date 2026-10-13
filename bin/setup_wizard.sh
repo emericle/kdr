@@ -19,10 +19,27 @@ else
     echo "  cp .env.example .env"
     echo ""
     echo "Then edit .env and add your credentials:"
-    echo "  - ADANOS_API_KEY"
-    echo "  - ALPACA_API_KEY"
-    echo "  - ALPACA_SECRET_KEY"
-    echo "  - DATABASE_URL"
+    # bin/check_env.py is the single source of truth for the required list.
+    # The wizard runs before the virtualenv exists, so take whichever
+    # interpreter this host has; if none of them can run the checker, say where
+    # the list lives rather than printing an empty checklist.
+    CHECK_PY=""
+    if [ -x ".venv/bin/python" ]; then
+        CHECK_PY=".venv/bin/python"
+    else
+        CHECK_PY="$(command -v python3.13 || command -v python3 || true)"
+    fi
+    REQUIRED_KEYS=""
+    if [ -n "$CHECK_PY" ]; then
+        REQUIRED_KEYS="$("$CHECK_PY" bin/check_env.py --keys 2>/dev/null)"
+    fi
+    if [ -n "$REQUIRED_KEYS" ]; then
+        for key in $REQUIRED_KEYS; do
+            echo "  - $key"
+        done
+    else
+        echo "  (bin/check_env.py could not run; the required names are in .env.example)"
+    fi
     echo ""
     read -p "Press Enter to create .env from template (Ctrl+C to cancel)..."
     cp .env.example .env
@@ -41,7 +58,7 @@ else
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "Creating virtual environment..."
-    python3.14 -m venv .venv
+    python3.13 -m venv .venv
     if [ $? -eq 0 ]; then
         echo "✅ Virtual environment created"
     else
