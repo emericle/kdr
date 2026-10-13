@@ -1,10 +1,11 @@
-import os
 import csv
 import json
-import uuid
 import logging
-from typing import List, Dict, Any
+import os
+import uuid
 from datetime import datetime
+from typing import Any
+
 from src.times import now_utc
 
 logger = logging.getLogger("Reporting")
@@ -21,7 +22,7 @@ def get_dated_output_path(filename: str, base_dir: str = "outputs") -> str:
 class CSVReporter:
     """Generates structured CSV reports from trade logs and portfolio snapshots."""
 
-    def generate_report(self, trading_data: List[Dict[str, Any]], output_path: str) -> str:
+    def generate_report(self, trading_data: list[dict[str, Any]], output_path: str) -> str:
         if not trading_data:
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
             with open(output_path, "w", newline="") as f:
@@ -52,7 +53,7 @@ class ChartGenerator:
 
     def create_portfolio_chart(
         self,
-        portfolio_history: List[Dict[str, Any]],
+        portfolio_history: list[dict[str, Any]],
         output_path: str
     ) -> str:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -107,7 +108,7 @@ class ChartGenerator:
 class PerformanceAnalyzer:
     """Calculates risk, return, and performance metrics from executed trades."""
 
-    def calculate_metrics(self, trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def calculate_metrics(self, trades: list[dict[str, Any]]) -> dict[str, Any]:
         if not trades:
             return {
                 "total_trades": 0,
@@ -165,7 +166,7 @@ class ReportScheduler:
     """Manages scheduled automated report generation."""
 
     def __init__(self):
-        self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._jobs: dict[str, dict[str, Any]] = {}
 
     def schedule_report(
         self,
@@ -184,7 +185,7 @@ class ReportScheduler:
         }
         return job_id
 
-    def get_scheduled_jobs(self) -> Dict[str, Dict[str, Any]]:
+    def get_scheduled_jobs(self) -> dict[str, dict[str, Any]]:
         return dict(self._jobs)
 
     def cancel_job(self, job_id: str) -> bool:
@@ -199,7 +200,7 @@ class MultiSymbolReporter:
 
     def generate_report(
         self,
-        symbol_data: Dict[str, List[Dict[str, Any]]],
+        symbol_data: dict[str, list[dict[str, Any]]],
         output_path: str
     ) -> str:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)

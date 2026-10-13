@@ -1,9 +1,9 @@
-import unittest
-from unittest.mock import MagicMock, patch, mock_open
-from src.config_gatekeeper import validate_configs
 import os
-import sys
-import json
+import unittest
+from unittest.mock import patch
+
+from src.config_gatekeeper import validate_configs
+
 
 class TestConfigGatekeeper(unittest.TestCase):
     def test_missing_all_keys_raises_sys_exit(self):
@@ -35,7 +35,7 @@ class TestConfigGatekeeper(unittest.TestCase):
 
     def test_valid_keys_all_present(self):
         original_env = os.environ.copy()
-        
+
         try:
             with patch.dict(os.environ, {
                 "ADANOS_API_KEY": "test_key_1",
@@ -50,7 +50,7 @@ class TestConfigGatekeeper(unittest.TestCase):
 
     def test_valid_keys_with_extra_variables(self):
         original_env = os.environ.copy()
-        
+
         try:
             with patch.dict(os.environ, {
                 "ADANOS_API_KEY": "test_key",
@@ -78,7 +78,7 @@ class TestConfigGatekeeper(unittest.TestCase):
 
     def test_config_validation_is_idempotent(self):
         original_env = os.environ.copy()
-        
+
         try:
             with patch.dict(os.environ, {
                 "ADANOS_API_KEY": "test_key",
@@ -96,7 +96,7 @@ class TestConfigGatekeeper(unittest.TestCase):
 class TestConfigGatekeeperEdgeCases(unittest.TestCase):
     def test_empty_values_for_keys(self):
         original_env = os.environ.copy()
-        
+
         try:
             with patch.dict(os.environ, {
                 "ADANOS_API_KEY": "",

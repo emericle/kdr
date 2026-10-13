@@ -2,7 +2,7 @@
 import pytest
 
 from src.backtest import Backtester, _transition, summarize
-from src.domain import FullState, MarketState, PortfolioState, Action
+from src.domain import Action, FullState, MarketState, PortfolioState
 from src.model import BellmanEngine, LinearValueFunction
 
 

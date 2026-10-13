@@ -1,9 +1,12 @@
 """Bellman decision model: value functions, the Bellman engine, and the training loop."""
 import math
+from collections.abc import Callable, Iterable
+from typing import Protocol
 
-from src.domain import Action, FullState, candidate_actions
 import numpy as np
-from typing import Iterable, List, Callable, Protocol
+
+from src.domain import Action, FullState
+
 
 class ValueFunction(Protocol):
     """Protocol for a value function that can predict and update."""
@@ -71,7 +74,7 @@ class BellmanEngine:
     def compute_action(
         self,
         state: FullState,
-        symbols: List[str],
+        symbols: list[str],
         candidates: Iterable[Action],
         transition: Callable[[Action, FullState], tuple[float, FullState]],
         value_fn: Callable[[np.ndarray], float],

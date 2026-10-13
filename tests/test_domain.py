@@ -1,6 +1,7 @@
-from src.domain import MarketState, PortfolioState, FullState, Action, TradeMovement
-import numpy as np
 import pytest
+
+from src.domain import Action, FullState, MarketState, PortfolioState, TradeMovement
+
 
 def test_market_state_validation():
     # Test prices not empty

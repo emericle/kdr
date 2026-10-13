@@ -31,7 +31,7 @@ def test_required_env_vars():
     missing = [key for key in required_keys if not os.getenv(key)]
     if missing:
         print(f"❌ Missing environment variables: {', '.join(missing)}")
-        assert False, f"Missing environment variables: {', '.join(missing)}"
+        raise AssertionError(f"Missing environment variables: {', '.join(missing)}")
     print("✅ All required environment variables are present")
 
 
@@ -39,7 +39,7 @@ def test_python_version():
     """Test that Python 3.14+ is available."""
     if sys.version_info < (3, 14):
         print(f"❌ Python version {sys.version} is too old. Requires 3.14+")
-        assert False, f"Python version {sys.version} is too old. Requires 3.14+"
+        raise AssertionError(f"Python version {sys.version} is too old. Requires 3.14+")
     print(f"✅ Python version {sys.version_info.major}.{sys.version_info.minor} is compatible")
 
 
@@ -47,38 +47,38 @@ def test_requirements_file():
     """Test that requirements.txt exists."""
     req_file = PROJECT_ROOT / "requirements.txt"
     try:
-        with open(req_file, "r") as f:
+        with open(req_file) as f:
             deps = [line.strip() for line in f if line.strip()]
         print(f"✅ Found {len(deps)} dependencies in requirements.txt")
     except FileNotFoundError:
         print("❌ requirements.txt not found")
-        assert False, "requirements.txt not found"
+        raise AssertionError("requirements.txt not found") from None
 
 
 def test_src_file():
     """Test that the main source file exists."""
     src_file = PROJECT_ROOT / "src" / "scraper.py"
     try:
-        with open(src_file, "r") as f:
+        with open(src_file) as f:
             _ = f.read()
         print("✅ Main source file (src/scraper.py) exists")
     except FileNotFoundError:
         print("❌ Main source file (src/scraper.py) not found")
-        assert False, "Main source file (src/scraper.py) not found"
+        raise AssertionError("Main source file (src/scraper.py) not found") from None
 
 
 def test_imports():
     """Test that modules can be imported correctly."""
     try:
-        from src.database import DatabaseManager  # noqa: F401
         from src.config_gatekeeper import validate_configs  # noqa: F401
+        from src.database import DatabaseManager  # noqa: F401
         from src.state_mapper import StateMapper  # noqa: F401
 
         print("✅ All module imports work correctly")
     except ImportError as e:
         print(f"❌ Module import failed: {e}")
         print("   Make sure PYTHONPATH includes the project root directory")
-        assert False, f"Module import failed: {e}"
+        raise AssertionError(f"Module import failed: {e}") from e
 
 
 def main():
@@ -124,9 +124,8 @@ def main():
     if passed == total:
         print("🎉 All tests passed! You can proceed with startup.")
         return 0
-    else:
-        print(f"⚠️  {passed}/{total} tests passed. Check the failures above.")
-        return 1
+    print(f"⚠️  {passed}/{total} tests passed. Check the failures above.")
+    return 1
 
 
 if __name__ == "__main__":

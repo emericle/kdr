@@ -1,26 +1,47 @@
 """Database management module for market data and model weights."""
-import os
 import json
 import logging
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta, timezone
+import os
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from sqlalchemy import Column, Integer, Float, String, DateTime, Text, Index
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from sqlalchemy.pool import QueuePool
-from sqlalchemy import create_engine
 from dotenv import load_dotenv
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Text, create_engine
+from sqlalchemy.exc import DBAPIError, IntegrityError, InvalidRequestError
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.pool import QueuePool
 
-from src.times import epoch_seconds, from_epoch, hhmmss, minute_key, now_utc, parse_iso, to_utc
+from src.times import epoch_seconds, hhmmss, minute_key, now_utc, to_utc
 
-# Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# What a failed database operation can raise. SQLAlchemy wraps every DBAPI
+# failure (connection lost, rejected insert, statement refused) under
+# DBAPIError, and InvalidRequestError covers a query built against something the
+# schema does not have. Readers answer these with an empty result, so a lost
+# database cannot stop the pipeline; anything else is a bug in this file and is
+# left to reach the caller.
+DB_FAILURES = (DBAPIError, InvalidRequestError)
 
-def get_database_url(override_url: Optional[str] = None) -> str:
+_dotenv_loaded = False
+
+
+def load_environment() -> None:
+    """Read ``.env`` into the environment, once, on first use.
+
+    Nothing in this module loads it at import any more: importing a module is
+    not an action, and a process that imported ``src.database`` for its models
+    used to pick up credentials as a side effect. Callers that read
+    ``os.getenv`` directly (the gatekeeper, the stream client) call this first.
+    """
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    load_dotenv()
+    _dotenv_loaded = True
+
+
+def get_database_url(override_url: str | None = None) -> str:
     """Resolve the database URL from configuration only.
 
     Priority: explicit override, then ``DATABASE_URL``, then ``QA_DATABASE_URL``
@@ -34,6 +55,7 @@ def get_database_url(override_url: Optional[str] = None) -> str:
     """
     if override_url:
         return override_url
+    load_environment()
     qa_url = os.getenv("QA_DATABASE_URL", "")
     if os.getenv("SKIP_DB_TEST") or os.getenv("USE_QA_DB"):
         if not qa_url:
@@ -50,11 +72,10 @@ def get_database_url(override_url: Optional[str] = None) -> str:
         )
     return env_url
 
-DATABASE_URL = get_database_url()
 
 class DatabaseConnection:
     """Handles the underlying SQL connection and session factory."""
-    def __init__(self, db_url: Optional[str] = None):
+    def __init__(self, db_url: str | None = None):
         self.db_url = get_database_url(db_url)
         if "sqlite" in self.db_url:
             self.engine = create_engine(self.db_url)
@@ -66,7 +87,7 @@ class DatabaseConnection:
                 pool_recycle=300,
                 connect_args={"connect_timeout": 1}
             )
-        
+
         self.session_factory = sessionmaker(bind=self.engine)
 
     def get_session(self):
@@ -82,7 +103,7 @@ class DatabaseConnection:
                 logger.info("Initialising database tables...")
                 Base.metadata.create_all(self.engine)
                 logger.info("Database initialized successfully.")
-            except Exception as e:
+            except DB_FAILURES as e:
                 logger.warning(f"Notice: Database initialization skipped: {e}")
 
 
@@ -116,7 +137,7 @@ class MarketDataModel(Base):
     bar_key_index = Index("market_data_bar_unique", symbol, timestamp, unique=True)
 
 
-def bar_key(item: Dict[str, Any]) -> Optional[tuple]:
+def bar_key(item: dict[str, Any]) -> tuple | None:
     """The uniqueness key of a market data record, or None when it has no timestamp.
 
     The timestamp is normalized with :func:`src.times.to_utc` so a bar written
@@ -174,7 +195,7 @@ def interval_window(duration: str, now: datetime, latest_time: datetime) -> tupl
     if offset is None:
         if duration == "ytd":
             base_year = latest_time.year if (now - latest_time) > timedelta(days=365) else now.year
-            return datetime(base_year, 1, 1, tzinfo=timezone.utc), now
+            return datetime(base_year, 1, 1, tzinfo=UTC), now
         return now - INTERVAL_OFFSETS["24h"], now
     ref_end_time = latest_time if (now - latest_time) > offset else now
     return ref_end_time - offset, ref_end_time
@@ -182,14 +203,56 @@ def interval_window(duration: str, now: datetime, latest_time: datetime) -> tupl
 
 class DatabaseManager:
     """High-level manager for database operations."""
-    def __init__(self, db_url: Optional[str] = None):
+    def __init__(self, db_url: str | None = None):
         self.connection = DatabaseConnection(db_url)
         # Interval-start prices are read several times per dashboard refresh;
         # they are kept for the minute they were read in and dropped on write.
-        self._interval_cache: Dict[tuple, Optional[float]] = {}
-        self._interval_cache_minute: Optional[str] = None
+        self._interval_cache: dict[tuple, float | None] = {}
+        self._interval_cache_minute: str | None = None
 
-    def add_market_data(self, data: List[dict]) -> None:
+    def _rollback(self, session) -> None:
+        """Roll a failed transaction back, ignoring a rollback that itself fails."""
+        try:
+            session.rollback()
+        except DB_FAILURES:
+            pass
+
+    def _prepare_bars(self, data: list[dict]) -> tuple[list[tuple], list[tuple]]:
+        """Drop keys the model does not have and remove bars repeated within ``data``.
+
+        Returns ``(records, keys)``: one ``(bar_key, MarketDataModel)`` pair per
+        bar worth writing, and the keys of those bars that have one, in the order
+        they first appear.
+        """
+        records: list[tuple] = []
+        keys: list[tuple] = []
+        seen_keys: set[tuple] = set()
+        for item in data:
+            filtered_item = {k: v for k, v in item.items() if k in MARKET_DATA_COLUMNS}
+            key = bar_key(filtered_item)
+            if key is not None and key in seen_keys:
+                logger.debug("Skipping duplicate bar in batch: %s", key)
+                continue
+            if key is not None:
+                seen_keys.add(key)
+                keys.append(key)
+            logger.debug("Ready to insert record: %s", filtered_item)
+            records.append((key, MarketDataModel(**filtered_item)))
+        return records, keys
+
+    def _write_bar(self, session, key, model) -> None:
+        """Insert one bar, skipping it when the unique index already holds it."""
+        try:
+            session.add(model)
+            session.commit()
+        except IntegrityError:
+            logger.debug("Bar already stored, skipped: %s", key)
+            self._rollback(session)
+        except DB_FAILURES as e:
+            logger.error("Error writing market data to database: %s", e)
+            self._rollback(session)
+
+    def add_market_data(self, data: list[dict]) -> None:
         """Adds new market data records to the database in a single batched transaction.
 
         Duplicate bars are skipped rather than written twice: ``(symbol,
@@ -210,23 +273,10 @@ class DatabaseManager:
         # A write invalidates the cached interval anchors.
         self._interval_cache.clear()
 
+        records: list[tuple] = []
         try:
-            records: List[tuple] = []
-            seen: List[tuple] = []
-            seen_keys = set()
-            for item in data:
-                filtered_item = {k: v for k, v in item.items() if k in MARKET_DATA_COLUMNS}
-                key = bar_key(filtered_item)
-                if key is not None:
-                    if key in seen_keys:
-                        logger.debug("Skipping duplicate bar in batch: %s", key)
-                        continue
-                    seen_keys.add(key)
-                    seen.append(key)
-                logger.debug("Ready to insert record: %s", filtered_item)
-                records.append((key, MarketDataModel(**filtered_item)))
-
-            stored = self._stored_bar_keys(session, seen)
+            records, keys = self._prepare_bars(data)
+            stored = self._stored_bar_keys(session, keys)
             fresh = [model for key, model in records if key is None or key not in stored]
 
             if not fresh:
@@ -242,36 +292,16 @@ class DatabaseManager:
             # Another writer stored one of these bars between the check and the
             # commit. Roll the batch back and keep the records that still fit.
             logger.warning("Duplicate bars in batch, retrying one at a time: %s", e)
-            try:
-                session.rollback()
-            except Exception:
-                pass
+            self._rollback(session)
             for key, model in records:
-                try:
-                    session.add(model)
-                    session.commit()
-                except IntegrityError:
-                    logger.debug("Bar already stored, skipped: %s", key)
-                    try:
-                        session.rollback()
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.error("Error writing market data to database: %s", e)
-                    try:
-                        session.rollback()
-                    except Exception:
-                        pass
-        except Exception as e:
+                self._write_bar(session, key, model)
+        except DB_FAILURES as e:
             logger.error("Error writing market data to database: %s", e)
-            try:
-                session.rollback()
-            except Exception:
-                pass
+            self._rollback(session)
         finally:
             self.connection.close(session)
 
-    def _stored_bar_keys(self, session, keys: List[tuple]) -> set:
+    def _stored_bar_keys(self, session, keys: list[tuple]) -> set:
         """Which of ``keys`` are already in ``market_data``.
 
         One query per batch: the symbols and timestamps are filtered in bulk and
@@ -294,16 +324,16 @@ class DatabaseManager:
                 except (TypeError, ValueError):
                     continue
             return stored
-        except Exception as e:
+        except DB_FAILURES as e:
             logger.error("Error checking stored bars: %s", e)
             return set()
 
     def get_historical_market_data(
         self,
         symbol: str,
-        start_time: Optional[datetime] = None,
+        start_time: datetime | None = None,
         limit: int = 2000
-    ) -> List[dict]:
+    ) -> list[dict]:
         """Retrieves historical market data / bars for a symbol since start_time."""
         session = self.connection.get_session()
         if not session:
@@ -339,13 +369,13 @@ class DatabaseManager:
                 }
                 for r in records
             ]
-        except Exception as e:
+        except DB_FAILURES as e:
             logger.error("Error retrieving historical market data for %s: %s", symbol, e)
             return []
         finally:
             self.connection.close(session)
 
-    def get_price_at_timestamp(self, symbol: str, target_timestamp: datetime) -> Optional[float]:
+    def get_price_at_timestamp(self, symbol: str, target_timestamp: datetime) -> float | None:
         """Retrieves the price at a specific timestamp for interval calculation."""
         session = self.connection.get_session()
         if not session:
@@ -358,13 +388,13 @@ class DatabaseManager:
             if query:
                 return float(query.close if query.close is not None else query.open or 0.0)
             return None
-        except Exception as e:
+        except DB_FAILURES as e:
             logger.error(f"Error retrieving price at timestamp for {symbol}: {e}")
             return None
         finally:
             self.connection.close(session)
 
-    def get_latest_price(self, symbol: str) -> Optional[float]:
+    def get_latest_price(self, symbol: str) -> float | None:
         """Retrieves the latest known price for a symbol."""
         session = self.connection.get_session()
         if not session:
@@ -376,13 +406,13 @@ class DatabaseManager:
             if latest:
                 return float(latest.close if latest.close is not None else latest.open or 0.0)
             return None
-        except Exception as e:
+        except DB_FAILURES as e:
             logger.error(f"Error retrieving latest price for {symbol}: {e}")
             return None
         finally:
             self.connection.close(session)
 
-    def get_latest_market_record(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_latest_market_record(self, symbol: str) -> dict[str, Any] | None:
         """Retrieves the latest market data record with full details."""
         session = self.connection.get_session()
         if not session:
@@ -408,13 +438,13 @@ class DatabaseManager:
                     "time_str": time_str
                 }
             return None
-        except Exception as e:
+        except DB_FAILURES as e:
             logger.error(f"Error retrieving latest market record for {symbol}: {e}")
             return None
         finally:
             self.connection.close(session)
 
-    def get_price_at_interval_start(self, symbol: str, duration: str) -> Optional[float]:
+    def get_price_at_interval_start(self, symbol: str, duration: str) -> float | None:
         """Retrieves the price at the start of a time interval for percentage calculation.
 
         Thin wrapper over :meth:`get_prices_at_interval_starts`, which is the one
@@ -425,8 +455,8 @@ class DatabaseManager:
     def get_prices_at_interval_starts(
         self,
         symbol: str,
-        durations: Optional[List[str]] = None,
-    ) -> Dict[str, Optional[float]]:
+        durations: list[str] | None = None,
+    ) -> dict[str, float | None]:
         """Interval-start prices for several durations for one symbol.
 
         The dashboard asks for every duration (1h, 24h, 5d, 30d, 1y, ytd) per
@@ -454,8 +484,8 @@ class DatabaseManager:
             self._interval_cache.clear()
             self._interval_cache_minute = minute
 
-        prices: Dict[str, Optional[float]] = {}
-        missing: List[str] = []
+        prices: dict[str, float | None] = {}
+        missing: list[str] = []
         for duration in wanted:
             key = (symbol_u, duration, minute)
             if key in self._interval_cache:
@@ -467,7 +497,7 @@ class DatabaseManager:
 
         session = self.connection.get_session()
         if not session:
-            return {duration: None for duration in wanted}
+            return dict.fromkeys(wanted)
         try:
             # One anchor read shared by every duration.
             latest = session.query(MarketDataModel).filter(
@@ -485,13 +515,13 @@ class DatabaseManager:
                 key = (symbol_u, duration, minute)
                 self._interval_cache[key] = prices[duration]
             return prices
-        except Exception as e:
+        except DB_FAILURES as e:
             logger.error(f"Error retrieving interval start prices for {symbol}: {e}")
-            return {duration: None for duration in wanted}
+            return dict.fromkeys(wanted)
         finally:
             self.connection.close(session)
 
-    def _interval_price(self, session, symbol: str, target_time: datetime, ref_end_time: datetime) -> Optional[float]:
+    def _interval_price(self, session, symbol: str, target_time: datetime, ref_end_time: datetime) -> float | None:
         """The price at or just after ``target_time``, then just before it, then the oldest."""
         query = session.query(MarketDataModel).filter(
             MarketDataModel.symbol == symbol,

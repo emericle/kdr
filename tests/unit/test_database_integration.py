@@ -27,14 +27,13 @@ import unittest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
-from typing import Optional
 
 from src.database import (
+    INTERVAL_DURATIONS,
     DatabaseManager,
     MarketDataModel,
     ModelWeightsModel,
     get_database_url,
-    INTERVAL_DURATIONS,
     now_utc,
 )
 
@@ -67,7 +66,7 @@ def contract_model_weights_round_trip(db: DatabaseManager, symbol: str) -> None:
     session.add(
         ModelWeightsModel(
             symbol=symbol,
-            last_trained=datetime.datetime.now(datetime.timezone.utc),
+            last_trained=datetime.datetime.now(datetime.UTC),
             weights_json=json.dumps(weights),
         )
     )
@@ -88,7 +87,7 @@ def contract_model_weights_malformed_json(db: DatabaseManager, symbol: str) -> N
     session.add(
         ModelWeightsModel(
             symbol=symbol,
-            last_trained=datetime.datetime.now(datetime.timezone.utc),
+            last_trained=datetime.datetime.now(datetime.UTC),
             weights_json="invalid json {{",
         )
     )
@@ -144,7 +143,7 @@ def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
     bars: list[dict] = [
         {
             "symbol": symbol,
-            "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.timezone.utc),
+            "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.UTC),
             "open": 101.0,
             "high": 102.0,
             "low": 100.0,
@@ -153,7 +152,7 @@ def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
         },
         {
             "symbol": symbol,
-            "timestamp": datetime.datetime(2026, 10, 9, 14, 0, tzinfo=datetime.timezone.utc),
+            "timestamp": datetime.datetime(2026, 10, 9, 14, 0, tzinfo=datetime.UTC),
             "open": 102.0,
             "high": 103.0,
             "low": 101.0,
@@ -221,7 +220,7 @@ def contract_duplicate_bars_are_skipped(db: DatabaseManager, symbol: str) -> Non
     """
     bar = {
         "symbol": symbol,
-        "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.timezone.utc),
+        "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.UTC),
         "open": 101.0,
         "high": 102.0,
         "low": 100.0,

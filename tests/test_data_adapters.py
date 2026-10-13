@@ -1,10 +1,11 @@
 """Unit tests for data adapters."""
-import pytest
 import datetime
-from datetime import timezone
+
+import pytest
+
 from src.data_adapters import AlpacaDataAdapter
+from src.domain import FullState, MarketState, PortfolioState
 from src.sentiment_adapter import AdanosDataAdapter
-from src.domain import MarketState, PortfolioState, FullState
 
 # --- Test AlpacaDataAdapter ---
 
@@ -15,7 +16,7 @@ class TestAlpacaDataAdapter:
         """A naive datetime is read as UTC and returned timezone-aware."""
         dt = datetime.datetime.now()
         result = AlpacaDataAdapter._normalize_timestamp(dt)
-        assert result == dt.replace(tzinfo=timezone.utc)
+        assert result == dt.replace(tzinfo=datetime.UTC)
 
     def test_normalize_timestamp_iso_string(self):
         """Should parse ISO formatted datetime string."""
@@ -107,7 +108,7 @@ class TestAlpacaDataAdapter:
         }
         result = AlpacaDataAdapter.parse_tick_data(raw_tick)
         assert result is not None
-        assert result['timestamp'] == now.replace(tzinfo=timezone.utc)
+        assert result['timestamp'] == now.replace(tzinfo=datetime.UTC)
 
     def test_parse_bar_data_success(self):
         """Should successfully parse bar data."""
@@ -144,7 +145,7 @@ class TestAlpacaDataAdapter:
         }
         result = AlpacaDataAdapter.parse_bar_data(raw_bar)
         assert result is not None
-        assert result['timestamp'] == now.replace(tzinfo=timezone.utc)
+        assert result['timestamp'] == now.replace(tzinfo=datetime.UTC)
 
     def test_create_market_state_from_ticks(self):
         """Should create market state from tick data."""

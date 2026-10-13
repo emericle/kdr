@@ -236,6 +236,32 @@ construction fails. To exercise the skipped tests, start the app and point
 
 ---
 
+## Linting & Type Checking
+
+`pyproject.toml` carries the committed ruff and mypy configuration, so a reviewer
+and CI get the same result:
+
+```bash
+ruff check src/ tests/    # 0 findings
+ruff check src/ tests/ --fix
+mypy src/                 # clean; plotly and the Alpaca client ship no stubs
+```
+
+ruff is a development tool, not a runtime dependency, so it is not in
+`requirements.txt`:
+
+```bash
+.venv/bin/python -m pip install ruff
+```
+
+Two rules are worth naming because they shape the code rather than report on it:
+the `C` rules reject a function complex enough to need splitting, and every
+`except` names the failure it answers (`DB_FAILURES`, `PAYLOAD_FAILURES`,
+`BROKER_FAILURES`) instead of catching `Exception`. The few broad catches that
+remain sit at thread and process boundaries and each carries a comment saying why.
+
+---
+
 ## Troubleshooting
 
 | Issue | Cause | Resolution |
@@ -262,11 +288,18 @@ construction fails. To exercise the skipped tests, start the app and point
 │   ├── model.py         # Bellman decision engine and RL training
 │   ├── backtest.py      # Historical replay and paper-portfolio validation
 │   ├── trading_execution.py # Risk management, Kelly sizing, and Alpaca execution
-│   ├── scraper.py       # Alpaca WebSocket streaming, buffer, and batch DB writer
+│   ├── scraper.py       # CLI for the pipeline; re-exports the modules below
+│   ├── stream_client.py # Alpaca WebSocket streaming (AlpacaStreamProcessor)
+│   ├── data_buffer.py   # Minute-bucketed tick aggregation (DataStreamBuffer)
+│   ├── db_writer.py     # Queue draining, DBWriterWorker, run_worker_threads
+│   ├── logging_config.py # The one logging configuration (rotating logs/kdr.log)
 │   ├── database.py      # SQLAlchemy persistence and schema migrations
 │   ├── state_mapper.py  # Tick/bar transformation to domain states
 │   ├── sentiment_adapter.py # Adanos sentiment integration
-│   ├── web_server.py    # FastAPI REST & WebSocket server
+│   ├── web_server/      # FastAPI REST & WebSocket server, as a package
+│   │   ├── data_layer.py  # buffers, the index store, database access
+│   │   ├── api_layer.py   # the routes and the WebSocket endpoint
+│   │   └── __init__.py    # re-exports, so src.web_server:app keeps working
 │   ├── reporting.py     # CSV, metrics, and Plotly equity chart generators
 │   └── static/          # Web dashboard (Vue 3 + Chart.js)
 ├── tests/               # Unit and integration test suites
@@ -274,6 +307,7 @@ construction fails. To exercise the skipped tests, start the app and point
 │   ├── test_integration_pipeline.py # Pipeline contract tests (domain → DB)
 │   └── unit/            # Component unit tests
 ├── requirements.txt     # Python package dependencies
+├── pyproject.toml       # Committed ruff + mypy configuration
 └── AGENTS.md            # Agent instructions and context guidelines
 ```
 

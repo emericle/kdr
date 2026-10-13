@@ -1,8 +1,7 @@
 """Tests for the Bellman decision action space."""
 
-import pytest
 
-from src.domain import Action, TradeMovement, candidate_actions
+from src.domain import TradeMovement, candidate_actions
 
 
 class TestCandidateActions:

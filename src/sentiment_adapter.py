@@ -1,10 +1,9 @@
 """Adapters for external data sources like Adanos sentiment analysis."""
 import logging
-from typing import List, Optional, Union
-from src.times import now_utc, to_utc
 import os
 
-from src.domain import MarketState, FullState, TimestampInput
+from src.domain import FullState, MarketState, TimestampInput
+from src.times import now_utc, to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +31,10 @@ class AdanosDataAdapter:
 
     @staticmethod
     def fetch_sentiment(
-        symbols: List[str],
+        symbols: list[str],
         timeframe: str = "1h",
         limit: int = 10
-    ) -> List[dict]:
+    ) -> list[dict]:
         """
         Fetch sentiment data from Adanos API for specified symbols.
 
@@ -70,7 +69,7 @@ class AdanosDataAdapter:
         return sentiment_data
 
     @staticmethod
-    def parse_sentiment_response(response_data: Union[dict, List[dict]]) -> List[dict]:
+    def parse_sentiment_response(response_data: dict | list[dict]) -> list[dict]:
         """
         Parse response from Adanos API into a standardized format.
 
@@ -110,8 +109,8 @@ class AdanosDataAdapter:
 
     @staticmethod
     def create_market_state_with_sentiment(
-        market_ticks: List[dict],
-        sentiment_data: List[dict]
+        market_ticks: list[dict],
+        sentiment_data: list[dict]
     ) -> MarketState:
         """
         Create MarketState enriched with sentiment scores.
@@ -151,9 +150,9 @@ class AdanosDataAdapter:
 
     @staticmethod
     def create_full_state_with_sentiment(
-        market_ticks: Optional[List[dict]] = None,
-        positions: Optional[List[dict]] = None,
-        sentiment_data: Optional[List[dict]] = None,
+        market_ticks: list[dict] | None = None,
+        positions: list[dict] | None = None,
+        sentiment_data: list[dict] | None = None,
         timestamp: TimestampInput = None
     ) -> FullState:
         """

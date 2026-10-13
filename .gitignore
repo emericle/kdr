@@ -5,7 +5,9 @@ logs/*.log
 !logs/.gitkeep
 
 
+# The one virtual environment the scripts and README create
 .venv/
+venv/
 __pycache__/
 *.pyc
 .env
@@ -13,5 +15,6 @@ outputs/
 data/
 .DS_Store
 .coverage
+*.bak
 wlsf/
 

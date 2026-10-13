@@ -19,7 +19,7 @@ The thresholds are epoch seconds past the year 30000, so no real timestamp can
 be mistaken for the wrong shape.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 NANOSECOND_THRESHOLD = 1e15
 MILLISECOND_THRESHOLD = 1e12
@@ -27,7 +27,7 @@ MILLISECOND_THRESHOLD = 1e12
 
 def now_utc() -> datetime:
     """Current time as a timezone-aware UTC datetime."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def to_utc(value):
@@ -41,8 +41,8 @@ def to_utc(value):
     """
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     if isinstance(value, str):
         return to_utc(datetime.fromisoformat(value))
@@ -60,7 +60,7 @@ def to_utc(value):
 
 def from_epoch(seconds: float) -> datetime:
     """Convert epoch seconds to a timezone-aware UTC datetime."""
-    return datetime.fromtimestamp(float(seconds), tz=timezone.utc)
+    return datetime.fromtimestamp(float(seconds), tz=UTC)
 
 
 def epoch_seconds(value) -> float:

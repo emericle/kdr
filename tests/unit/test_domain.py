@@ -1,23 +1,23 @@
-import pytest
+import math
+from datetime import UTC, datetime
+
 import numpy as np
+import pytest
 from pydantic import ValidationError
+
 from src.domain import (
-    MarketState, 
-    PortfolioState, 
-    FullState, 
-    Action, 
+    Action,
+    FullState,
+    MarketState,
+    PortfolioState,
     TradeMovement,
     state_vector_schema,
 )
 
-import math
-
-from datetime import datetime, timezone
-
 
 class TestMarketState:
     """Tests for MarketState model."""
-    
+
     def test_market_state_valid(self):
         """Test creating a valid MarketState."""
         state = MarketState(
@@ -26,12 +26,12 @@ class TestMarketState:
         )
         assert state.prices == {"AAPL": 150.0, "TSLA": 700.0}
         assert state.sentiment_scores == {"AAPL": 0.5, "TSLA": 0.7}
-    
+
     def test_market_state_with_empty_prices(self):
         """Test that empty prices raises ValidationError."""
         with pytest.raises(ValidationError):
             MarketState(prices={}, sentiment_scores={})
-    
+
     def test_market_state_with_one_price(self):
         """Test creating MarketState with a single price."""
         state = MarketState(prices={"AAPL": 150.0})
@@ -41,7 +41,7 @@ class TestMarketState:
 
 class TestPortfolioState:
     """Tests for PortfolioState model."""
-    
+
     def test_portfolio_state_valid(self):
         """Test creating a valid PortfolioState."""
         state = PortfolioState(
@@ -50,22 +50,22 @@ class TestPortfolioState:
         )
         assert state.holdings == {"AAPL": 10.0, "TSLA": 5.0}
         assert state.cash == 5000.0
-    
+
     def test_portfolio_state_with_zero_cash(self):
         """Test PortfolioState with zero cash."""
         state = PortfolioState(holdings={}, cash=0.0)
         assert state.cash == 0.0
-    
+
     def test_portfolio_state_with_negative_holdings_raises_error(self):
         """Test that negative holdings raise ValidationError."""
         with pytest.raises(ValidationError):
             PortfolioState(holdings={"AAPL": -10.0}, cash=5000.0)
-    
+
     def test_portfolio_state_with_one_holding(self):
         """Test creating PortfolioState with a single holding."""
         state = PortfolioState(holdings={"AAPL": 10.0}, cash=5000.0)
         assert state.holdings == {"AAPL": 10.0}
-    
+
     def test_portfolio_state_holding_zero(self):
         """Test PortfolioState with zero quantity for a holding."""
         state = PortfolioState(holdings={"AAPL": 0.0}, cash=5000.0)
@@ -74,7 +74,7 @@ class TestPortfolioState:
 
 class TestFullState:
     """Tests for FullState model."""
-    
+
     def test_full_state_valid(self):
         """Test creating a valid FullState."""
         market = MarketState(prices={"AAPL": 150.0})
@@ -83,20 +83,20 @@ class TestFullState:
         assert state.market == market
         assert state.portfolio == portfolio
         assert state.timestamp is None
-    
+
     def test_full_state_with_timestamp(self):
         """Test creating FullState with timestamp."""
         market = MarketState(prices={"AAPL": 150.0})
         portfolio = PortfolioState(holdings={}, cash=5000.0)
         state = FullState(
-            market=market, 
-            portfolio=portfolio, 
+            market=market,
+            portfolio=portfolio,
             timestamp=1234567890.0
         )
         assert state.timestamp == datetime.fromtimestamp(
-            1234567890.0, tz=timezone.utc
+            1234567890.0, tz=UTC
         )
-    
+
     def test_full_state_to_vector(self):
         """Test converting FullState to vector."""
         market = MarketState(
@@ -108,7 +108,7 @@ class TestFullState:
             cash=5000.0
         )
         state = FullState(market=market, portfolio=portfolio)
-        
+
         symbols = ["AAPL", "TSLA"]
         vector = state.to_vector(symbols)
 
@@ -148,21 +148,21 @@ class TestFullState:
         vector = state.to_vector(["AAPL"])
         # 0 sits at the centre of a -1..1 scale, so it normalizes to 0.
         assert np.allclose(vector, [0.0, 0.0, 0.0, 1.0])
-    
+
     def test_full_state_to_vector_with_missing_symbols(self):
         """A symbol with no data falls back to neutral features, not raw prices."""
         market = MarketState(prices={"AAPL": 150.0})
         portfolio = PortfolioState(holdings={}, cash=5000.0)
         state = FullState(market=market, portfolio=portfolio)
-        
+
         symbols = ["AAPL", "TSLA"]
         vector = state.to_vector(symbols)
-        
+
         # No previous price and no holdings for either symbol; the missing
         # sentiment defaults to 0, which is the bottom of the 0..1 scale.
         expected = np.array([0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 1.0], dtype=np.float32)
         assert np.array_equal(vector, expected)
-    
+
     def test_full_state_to_vector_different_order(self):
         """to_vector lays symbols out in the order they are passed, not alphabetically."""
         market = MarketState(
@@ -228,21 +228,21 @@ class TestFullState:
 
 class TestAction:
     """Tests for Action model."""
-    
+
     def test_action_with_movement(self):
         """Test creating Action with movement."""
         action = Action(movement=TradeMovement.BUY, symbol="AAPL")
         assert action.movement == TradeMovement.BUY
         assert action.symbol == "AAPL"
         assert action.target_weights is None
-    
+
     def test_action_with_target_weights(self):
         """Test creating Action with target_weights."""
         action = Action(target_weights={"AAPL": 0.6, "TSLA": 0.4})
         assert action.target_weights == {"AAPL": 0.6, "TSLA": 0.4}
         assert action.movement is None
         assert action.symbol is None
-    
+
     def test_action_with_both_movement_and_target_weights(self):
         """Test creating Action with both attributes."""
         action = Action(
@@ -257,18 +257,18 @@ class TestAction:
 
 class TestTradeMovement:
     """Tests for TradeMovement enum."""
-    
+
     def test_buy_movement(self):
         """Test BUY movement."""
         movement = TradeMovement.BUY
         # TradeMovement inherits from str and Enum, compare the value directly
         assert movement == "BUY"
-    
+
     def test_sell_movement(self):
         """Test SELL movement."""
         movement = TradeMovement.SELL
         assert movement == "SELL"
-    
+
     def test_hold_movement(self):
         """Test HOLD movement."""
         movement = TradeMovement.HOLD

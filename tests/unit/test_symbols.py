@@ -2,11 +2,10 @@
 
 from src.symbols import (
     DEFAULT_SYMBOLS,
-    CRYPTO_SYMBOLS,
-    is_crypto_symbol,
-    to_alpaca_symbol,
     from_alpaca_symbol,
-    normalize_symbols
+    is_crypto_symbol,
+    normalize_symbols,
+    to_alpaca_symbol,
 )
 
 
