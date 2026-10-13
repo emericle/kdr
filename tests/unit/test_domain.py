@@ -6,8 +6,13 @@ from src.domain import (
     PortfolioState, 
     FullState, 
     Action, 
-    TradeMovement
+    TradeMovement,
+    state_vector_schema,
 )
+
+import math
+
+from datetime import datetime, timezone
 
 
 class TestMarketState:
@@ -88,7 +93,9 @@ class TestFullState:
             portfolio=portfolio, 
             timestamp=1234567890.0
         )
-        assert state.timestamp == 1234567890.0
+        assert state.timestamp == datetime.fromtimestamp(
+            1234567890.0, tz=timezone.utc
+        )
     
     def test_full_state_to_vector(self):
         """Test converting FullState to vector."""
@@ -104,13 +111,46 @@ class TestFullState:
         
         symbols = ["AAPL", "TSLA"]
         vector = state.to_vector(symbols)
-        
-        # Vector should have: [price_AAPL, holdings_AAPL, sentiment_AAPL, price_TSLA, holdings_TSLA, sentiment_TSLA, cash]
-        expected = np.array([150.0, 10.0, 0.5, 700.0, 5.0, 0.7, 5000.0], dtype=np.float32)
-        assert np.array_equal(vector, expected)
+
+        # Per symbol: log price change, sentiment rescaled onto [-1, 1], position
+        # flag. Then cash as a fraction of the portfolio's total value.
+        # No previous prices, so both price changes are 0.
+        # Sentiment: (0.5 - 0.5) / 0.5 = 0, (0.7 - 0.5) / 0.5 = 0.4
+        # Portfolio value: 5000 + 10 * 150 + 5 * 700 = 10000, so cash is half.
+        expected = np.array([0.0, 0.0, 1.0, 0.0, 0.4, 1.0, 0.5], dtype=np.float32)
+        assert np.allclose(vector, expected)
+
+    def test_full_state_to_vector_uses_previous_prices(self):
+        """A price change is reported when the state carries the previous price."""
+        market = MarketState(
+            prices={"AAPL": 150.0},
+            previous_prices={"AAPL": 100.0},
+            sentiment_scores={"AAPL": 0.5},
+        )
+        portfolio = PortfolioState(holdings={}, cash=1000.0)
+        state = FullState(market=market, portfolio=portfolio)
+
+        vector = state.to_vector(["AAPL"])
+        # log(150 / 100) is the price change; nothing is held, so cash is all of it.
+        assert np.allclose(vector, [math.log(1.5), 0.0, 0.0, 1.0])
+
+    def test_full_state_to_vector_custom_sentiment_range(self):
+        """A sentiment scale other than 0 to 1 is honoured by the normalization."""
+        market = MarketState(
+            prices={"AAPL": 150.0},
+            sentiment_scores={"AAPL": 0.0},
+            sentiment_min=-1.0,
+            sentiment_max=1.0,
+        )
+        portfolio = PortfolioState(holdings={}, cash=1000.0)
+        state = FullState(market=market, portfolio=portfolio)
+
+        vector = state.to_vector(["AAPL"])
+        # 0 sits at the centre of a -1..1 scale, so it normalizes to 0.
+        assert np.allclose(vector, [0.0, 0.0, 0.0, 1.0])
     
     def test_full_state_to_vector_with_missing_symbols(self):
-        """Test to_vector with missing symbols returns zeros."""
+        """A symbol with no data falls back to neutral features, not raw prices."""
         market = MarketState(prices={"AAPL": 150.0})
         portfolio = PortfolioState(holdings={}, cash=5000.0)
         state = FullState(market=market, portfolio=portfolio)
@@ -118,21 +158,72 @@ class TestFullState:
         symbols = ["AAPL", "TSLA"]
         vector = state.to_vector(symbols)
         
-        # TSLA should have zeros for missing data
-        expected = np.array([150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5000.0], dtype=np.float32)
+        # No previous price and no holdings for either symbol; the missing
+        # sentiment defaults to 0, which is the bottom of the 0..1 scale.
+        expected = np.array([0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 1.0], dtype=np.float32)
         assert np.array_equal(vector, expected)
     
     def test_full_state_to_vector_different_order(self):
-        """Test to_vector respects symbol order."""
-        market = MarketState(prices={"AAPL": 150.0, "TSLA": 700.0})
-        portfolio = PortfolioState(holdings={}, cash=5000.0)
+        """to_vector lays symbols out in the order they are passed, not alphabetically."""
+        market = MarketState(
+            prices={"AAPL": 150.0, "TSLA": 700.0},
+            previous_prices={"AAPL": 100.0, "TSLA": 700.0},
+            sentiment_scores={"AAPL": 0.5, "TSLA": 0.7},
+        )
+        portfolio = PortfolioState(holdings={"TSLA": 5.0}, cash=5000.0)
         state = FullState(market=market, portfolio=portfolio)
-        
-        symbols = ["TSLA", "AAPL"]
-        vector = state.to_vector(symbols)
-        
-        expected = np.array([700.0, 0.0, 0.0, 150.0, 0.0, 0.0, 5000.0], dtype=np.float32)
-        assert np.array_equal(vector, expected)
+
+        cash_fraction = 5000.0 / (5000.0 + 5.0 * 700.0)
+        forward = state.to_vector(["AAPL", "TSLA"])
+        reverse = state.to_vector(["TSLA", "AAPL"])
+
+        # AAPL: log(150/100), neutral sentiment, flat. TSLA: flat, 0.4 sentiment, held.
+        assert np.allclose(forward, [math.log(1.5), 0.0, 0.0, 0.0, 0.4, 1.0, cash_fraction])
+        assert np.allclose(reverse, [0.0, 0.4, 1.0, math.log(1.5), 0.0, 0.0, cash_fraction])
+
+    def test_legacy_vector_keeps_the_raw_layout(self):
+        """The pre-normalization features are still reachable for comparing runs."""
+        market = MarketState(
+            prices={"AAPL": 150.0},
+            sentiment_scores={"AAPL": 0.5},
+        )
+        portfolio = PortfolioState(holdings={"AAPL": 10.0}, cash=100.0)
+        state = FullState(market=market, portfolio=portfolio)
+
+        assert state.legacy_vector(["AAPL"]).tolist() == [150.0, 10.0, 0.5, 100.0]
+
+    def test_both_schemas_are_comparable(self):
+        """The two layouts have the same length, so a run can be diffed feature by feature."""
+        market = MarketState(
+            prices={"AAPL": 150.0},
+            sentiment_scores={"AAPL": 0.5},
+        )
+        portfolio = PortfolioState(holdings={"AAPL": 10.0}, cash=100.0)
+        state = FullState(market=market, portfolio=portfolio)
+
+        assert state.to_vector(["AAPL"], schema="legacy").shape == state.to_vector(["AAPL"], schema="normalized").shape
+
+    def test_schema_flag_selects_the_layout(self, monkeypatch):
+        """KDR_STATE_VECTOR_SCHEMA=legacy reproduces the raw features."""
+        market = MarketState(prices={"AAPL": 150.0}, sentiment_scores={"AAPL": 0.5})
+        portfolio = PortfolioState(holdings={"AAPL": 10.0}, cash=100.0)
+        state = FullState(market=market, portfolio=portfolio)
+
+        monkeypatch.setenv("KDR_STATE_VECTOR_SCHEMA", "legacy")
+        assert state_vector_schema() == "legacy"
+        assert state.to_vector(["AAPL"]).tolist() == [150.0, 10.0, 0.5, 100.0]
+
+    def test_schema_defaults_to_normalized(self, monkeypatch):
+        """An unset flag leaves the scaled features in effect."""
+        monkeypatch.delenv("KDR_STATE_VECTOR_SCHEMA", raising=False)
+        assert state_vector_schema() == "normalized"
+
+    def test_unknown_schema_is_rejected(self, monkeypatch):
+        """A typo in the flag fails loudly rather than silently picking a layout."""
+        monkeypatch.setenv("KDR_STATE_VECTOR_SCHEMA", "normalised")
+        with pytest.raises(ValueError) as exc:
+            state_vector_schema()
+        assert "KDR_STATE_VECTOR_SCHEMA" in exc.value.args[0]
 
 
 class TestAction:

@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime, timezone
+from src.times import now_utc
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 import requests
@@ -187,7 +188,7 @@ class OrderTracker:
     def record_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         record = dict(order)
         if "timestamp" not in record:
-            record["timestamp"] = datetime.now(timezone.utc)
+            record["timestamp"] = now_utc()
         self._history.append(record)
         if len(self._history) > self.max_history:
             self._history = self._history[-self.max_history:]
@@ -394,7 +395,7 @@ class TradingExecutor:
                     action=movement,
                     confidence=0.75,  # Default confidence
                     reasoning=["Based on Bellman model"],
-                    timestamp=datetime.now()
+                    timestamp=now_utc()
                 )
                 decision_buffer.add_decision(decision)
             except Exception as e:
@@ -433,9 +434,9 @@ class TradingExecutor:
                     new_decision = TradingDecision(
                         symbol=symbol,
                         action="BUY",
-                        confidence=eval_res.get("adjusted_shares") / proposed_shares * 0.8,
+                        confidence=eval_res["adjusted_shares"] / proposed_shares * 0.8,
                         reasoning=["Bellman model recommends buy", "Current price within target range"],
-                        timestamp=datetime.now()
+                        timestamp=now_utc()
                     )
                     decision_buffer.add_decision(new_decision)
                 except Exception as e:
@@ -473,7 +474,7 @@ class TradingExecutor:
                         action="SELL",
                         confidence=0.75,
                         reasoning=["Bellman model recommends sell", "Position target reached"],
-                        timestamp=datetime.now()
+                        timestamp=now_utc()
                     )
                     decision_buffer.add_decision(new_decision)
                 except Exception as e:

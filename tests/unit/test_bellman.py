@@ -7,23 +7,24 @@ def test_bellman_engine_returns_action():
     symbols = ["AAPL", "GOOGL"]
     market_prices = {"AAPL": 150.0, "GOOGL": 2800.0}
     market_sentiment = {"AAPL": 0.5, "GOOGL": 0.5}
-    
+
     # We need to manually construct because FullState expects MarketState and PortfolioState
-    from src.domain import MarketState, PortfolioState
+    from src.domain import MarketState, PortfolioState, candidate_actions
     market = MarketState(prices=market_prices, sentiment_scores=market_sentiment)
     portfolio = PortfolioState(holdings={"AAPL": 10.0, "GOOGL": 5.0}, cash=1000.0)
     state = FullState(market=market, portfolio=portfolio, timestamp=1672531200.0)
-    
-    engine = BellmanEngine(discount_factor=0.99)
-    
-    # Define a dummy policy function
-    def dummy_policy(state_vector: np.ndarray) -> Action:
-        return Action(movement=TradeMovement.HOLD, symbol="AAPL")
 
-    action = engine.compute_action(state, symbols, policy_fn=dummy_policy)
-    
+    engine = BellmanEngine(discount_factor=0.99)
+
+    # No price movement and no future value, so every candidate scores zero and
+    # the engine keeps the first one it considers.
+    def transition(action, current_state):
+        return 0.0, current_state
+
+    action = engine.compute_action(state, symbols, candidate_actions(symbols, {}), transition, lambda v: 0.0)
+
     assert isinstance(action, Action)
-    assert action.movement == TradeMovement.HOLD
+    assert action.movement == TradeMovement.BUY
     assert action.symbol == "AAPL"
 
 def test_bellman_target_calculation():

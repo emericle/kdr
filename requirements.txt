@@ -1,11 +1,9 @@
-gymnasium
 psycopg2-binary
 psycopg[binary]>=3.1.0
 alpaca-trade-api
 pandas
 plotly
 scikit-learn
-stable-baselines3
 python-dotenv
 requests
 fastapi>=0.104.0

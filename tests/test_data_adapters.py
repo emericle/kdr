@@ -1,6 +1,7 @@
 """Unit tests for data adapters."""
 import pytest
 import datetime
+from datetime import timezone
 from src.data_adapters import AlpacaDataAdapter
 from src.sentiment_adapter import AdanosDataAdapter
 from src.domain import MarketState, PortfolioState, FullState
@@ -11,10 +12,10 @@ class TestAlpacaDataAdapter:
     """Test AlpacaDataAdapter functionality."""
 
     def test_normalize_timestamp_datetime(self):
-        """Should return datetime object unchanged."""
+        """A naive datetime is read as UTC and returned timezone-aware."""
         dt = datetime.datetime.now()
         result = AlpacaDataAdapter._normalize_timestamp(dt)
-        assert result == dt
+        assert result == dt.replace(tzinfo=timezone.utc)
 
     def test_normalize_timestamp_iso_string(self):
         """Should parse ISO formatted datetime string."""
@@ -95,7 +96,7 @@ class TestAlpacaDataAdapter:
         assert result is None
 
     def test_parse_tick_data_with_datetime_object(self):
-        """Should parse tick data when timestamp is already datetime."""
+        """A naive datetime timestamp is normalized to UTC."""
         now = datetime.datetime.now()
         raw_tick = {
             'symbol': 'AAPL',
@@ -106,7 +107,7 @@ class TestAlpacaDataAdapter:
         }
         result = AlpacaDataAdapter.parse_tick_data(raw_tick)
         assert result is not None
-        assert result['timestamp'] == now
+        assert result['timestamp'] == now.replace(tzinfo=timezone.utc)
 
     def test_parse_bar_data_success(self):
         """Should successfully parse bar data."""
@@ -130,7 +131,7 @@ class TestAlpacaDataAdapter:
         assert result['close'] == 153.0
 
     def test_parse_bar_data_with_datetime_object(self):
-        """Should parse bar data when timestamp is already datetime."""
+        """A naive datetime timestamp is normalized to UTC."""
         now = datetime.datetime.now()
         raw_bar = {
             'symbol': 'AAPL',
@@ -143,7 +144,7 @@ class TestAlpacaDataAdapter:
         }
         result = AlpacaDataAdapter.parse_bar_data(raw_bar)
         assert result is not None
-        assert result['timestamp'] == now
+        assert result['timestamp'] == now.replace(tzinfo=timezone.utc)
 
     def test_create_market_state_from_ticks(self):
         """Should create market state from tick data."""
@@ -248,10 +249,9 @@ class TestAlpacaDataAdapter:
 class TestAdanosDataAdapter:
     """Test AdanosDataAdapter functionality."""
 
-    def test_fetch_sentiment_with_api_key(self):
+    def test_fetch_sentiment_with_api_key(self, monkeypatch):
         """Should fetch sentiment when API key is present."""
-        # Note: This test relies on ADANOS_API_KEY environment variable
-        AdanosDataAdapter.ADANOS_API_KEY = "test_key"
+        monkeypatch.setenv("ADANOS_API_KEY", "test_key")
 
         result = AdanosDataAdapter.fetch_sentiment(['AAPL', 'TSLA'])
 
@@ -259,9 +259,9 @@ class TestAdanosDataAdapter:
         assert len(result) > 0
         assert all('symbol' in r for r in result)
 
-    def test_fetch_sentiment_without_api_key(self):
+    def test_fetch_sentiment_without_api_key(self, monkeypatch):
         """Should return empty list when API key is missing."""
-        AdanosDataAdapter.ADANOS_API_KEY = ""
+        monkeypatch.delenv("ADANOS_API_KEY", raising=False)
 
         result = AdanosDataAdapter.fetch_sentiment(['AAPL'])
 

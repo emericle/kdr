@@ -1,8 +1,8 @@
 import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
-from src.domain import Action, FullState, MarketState, PortfolioState
-from src.model import BellmanEngine, RLTrainer
+from src.domain import Action, FullState, MarketState, PortfolioState, TradeMovement, candidate_actions
+from src.model import BellmanEngine, RLTrainer, LinearValueFunction
 from typing import Callable
 
 
@@ -82,34 +82,33 @@ class TestBellmanEngine:
     def test_compute_action(self):
         """Test computing action from state."""
         engine = BellmanEngine()
-        
+
         market = MarketState(prices={"AAPL": 150.0})
         portfolio = PortfolioState(holdings={}, cash=5000.0)
         state = FullState(market=market, portfolio=portfolio)
-        
-        def simple_policy(state_vector: np.ndarray) -> Action:
-            return Action(target_weights={"AAPL": 1.0})
-        
+
+        def transition(action: Action, current: FullState):
+            return 0.0, current
+
         symbols = ["AAPL"]
-        action = engine.compute_action(state, symbols, simple_policy)
-        
-        assert action.target_weights == {"AAPL": 1.0}
-    
+        action = engine.compute_action(state, symbols, candidate_actions(symbols, {}), transition, lambda v: 0.0)
+
+        assert action.symbol == "AAPL"
+        assert action.movement == TradeMovement.BUY
+
     def test_compute_action_with_no_symbols(self):
-        """Test compute_action with empty symbols list returns action."""
+        """Test compute_action with an empty action space raises instead of inventing a move."""
         engine = BellmanEngine()
-        
+
         market = MarketState(prices={"AAPL": 150.0})
         portfolio = PortfolioState(holdings={}, cash=5000.0)
         state = FullState(market=market, portfolio=portfolio)
-        
-        def policy(state_vector: np.ndarray) -> Action:
-            return Action()
-        
-        symbols = []
-        action = engine.compute_action(state, symbols, policy)
-        
-        assert action is not None
+
+        def transition(action: Action, current: FullState):
+            return 0.0, current
+
+        with pytest.raises(ValueError):
+            engine.compute_action(state, [], [], transition, lambda v: 0.0)
 
 
 class TestRLTrainer:
@@ -232,3 +231,40 @@ class MockValueFunction:
     
     def update(self, state_vector: np.ndarray, target: float, learning_rate: float) -> None:
         self.last_update = (state_vector, target, learning_rate)
+
+
+class TestLinearValueFunction:
+    """Tests for the concrete TD(0) value function the training loop fits."""
+
+    def test_predict_starts_at_zero(self):
+        """An untrained function rates every state at zero."""
+        vf = LinearValueFunction()
+        assert vf.predict(np.array([150.0, 0.5, 1.0], dtype=np.float32)) == 0.0
+
+    def test_update_moves_prediction_toward_target(self):
+        """One step raises the estimate toward the target without overshooting it."""
+        vf = LinearValueFunction()
+        vector = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        before = vf.predict(vector)
+        vf.update(vector, 10.0, 0.1)
+        after = vf.predict(vector)
+        assert before < after <= 10.0
+
+    def test_training_reduces_the_error(self):
+        """RLTrainer's Bellman target pulls the value function toward the reward."""
+        engine = BellmanEngine(discount_factor=0.99)
+        vf = LinearValueFunction()
+        trainer = RLTrainer(engine, vf, learning_rate=0.1)
+
+        vector = np.array([1.0], dtype=np.float32)
+        before = abs(10.0 - vf.predict(vector))
+        trainer.train_step(vector, 10.0, vector)
+        after = abs(10.0 - vf.predict(vector))
+        assert after < before
+
+    def test_vector_length_is_locked_by_the_first_call(self):
+        """A state vector of a different width is a bug, not something to absorb."""
+        vf = LinearValueFunction()
+        vf.predict(np.array([1.0, 2.0], dtype=np.float32))
+        with pytest.raises(ValueError):
+            vf.predict(np.array([1.0], dtype=np.float32))

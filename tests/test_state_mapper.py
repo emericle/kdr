@@ -244,6 +244,6 @@ class TestStateMapper:
             state_mapper.create_full_state_for_symbol("AAPL", {"AAPL": "not-valid"}, 0.5, {})
 
     def test_init_with_invalid_configs(self):
-        with patch('src.config_gatekeeper.validate_configs', return_value=False):
-            sm = StateMapper()
-            assert sm is not None
+        with patch('src.state_mapper.validate_configs', return_value=False):
+            with pytest.raises(RuntimeError, match="Required configuration is missing"):
+                StateMapper()

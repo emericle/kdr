@@ -1,12 +1,22 @@
 """Adapters for external data sources like Adanos sentiment analysis."""
 import logging
 from typing import List, Optional, Union
-from datetime import datetime
+from src.times import now_utc, to_utc
 import os
 
-from src.domain import MarketState, FullState
+from src.domain import MarketState, FullState, TimestampInput
 
 logger = logging.getLogger(__name__)
+
+
+def get_adanos_api_key() -> str:
+    """Read the Adanos key when it is needed.
+
+    Reading it at import time would freeze whatever the shell happened to have
+    set before Python started, so a key loaded from ``.env`` afterwards would be
+    invisible.
+    """
+    return os.getenv("ADANOS_API_KEY", "")
 
 
 class AdanosDataAdapter:
@@ -19,8 +29,6 @@ class AdanosDataAdapter:
     - source: The data source
     - timestamp: When the data was generated
     """
-
-    ADANOS_API_KEY = os.getenv("ADANOS_API_KEY", "")
 
     @staticmethod
     def fetch_sentiment(
@@ -39,7 +47,7 @@ class AdanosDataAdapter:
         Returns:
             List of sentiment data dictionaries
         """
-        if not AdanosDataAdapter.ADANOS_API_KEY:
+        if not get_adanos_api_key():
             logger.warning("ADANOS_API_KEY not found in environment. Skipping Adanos API call.")
             return []
 
@@ -52,7 +60,7 @@ class AdanosDataAdapter:
             # Mock sentiment response structure
             sentiment_record = {
                 'symbol': symbol.upper(),
-                'timestamp': datetime.now(),
+                'timestamp': now_utc(),
                 'score': 0.0,  # Will be populated by actual API
                 'source': 'adanos_api',
                 'timeframe': timeframe
@@ -82,11 +90,10 @@ class AdanosDataAdapter:
                     # Handle different response formats
                     score = float(item.get('score', 0.0))
 
+                    raw_timestamp = item.get('timestamp')
                     sentiment = {
                         'symbol': item.get('symbol', '').upper(),
-                        'timestamp': datetime.fromisoformat(
-                            item.get('timestamp', '').replace('Z', '+00:00')
-                        ),
+                        'timestamp': now_utc() if raw_timestamp in (None, "") else to_utc(raw_timestamp),
                         'score': score,
                         'source': item.get('source', 'unknown'),
                         'timeframe': item.get('timeframe', '1h'),
@@ -147,7 +154,7 @@ class AdanosDataAdapter:
         market_ticks: Optional[List[dict]] = None,
         positions: Optional[List[dict]] = None,
         sentiment_data: Optional[List[dict]] = None,
-        timestamp: Optional[float] = None
+        timestamp: TimestampInput = None
     ) -> FullState:
         """
         Create a complete state with sentiment integration.
@@ -182,7 +189,7 @@ class AdanosDataAdapter:
         return FullState(
             market=market_state,
             portfolio=portfolio_state,
-            timestamp=timestamp
+            timestamp=to_utc(timestamp) if timestamp is not None else None,
         )
 
     @staticmethod
