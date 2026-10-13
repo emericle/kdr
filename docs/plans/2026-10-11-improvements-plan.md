@@ -135,6 +135,23 @@ that is never asked are the same gap seen from two sides:
   `BACKTEST_TRAIN_EPOCHS` runs it, and `save_model_weights`/`load_value_function`
   move the parameters across processes.
 
+## Phase 3b/4b — The hygiene batch (found while implementing Phases 3 and 4)
+
+The bugs recorded while the earlier phases ran were unrelated to the task that
+found them, so they were left open and are closed as one batch:
+
+- `logs/` held 105 per-run files (390 MB) rotation could never remove; they are
+  deleted, `.gitignore` covers `logs/kdr.log.*`, and the deploy excludes `logs/*`.
+- The four entry scripts are consolidated onto `bin/_start_common.sh`: one PID file
+  (`logs/kdr.pid`), one interpreter (`.venv/bin/python`), one parser, one
+  pre-flight import.
+- The `import gymnasium` probe in `bin/local-start.sh` is gone; the package it warns
+  about is no longer a dependency.
+- The web server's two layers take distinct logger names.
+- The `--- Logging error ---` flake is fixed where it starts: the pipeline's unit
+  tests keep the dashboard's uvicorn thread out of scope, so no thread outlives the
+  test that started it.
+
 ## Verification
 
 Run after each phase, not just at the end:

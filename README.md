@@ -219,10 +219,20 @@ tail -f logs/kdr.log
 ./bin/local-stop.sh
 ```
 
+The four scripts answer different questions for a user — `bin/start.sh` bootstraps
+the environment and runs the dashboard in the foreground, `bin/daemon.sh` controls
+a background service (`start`/`stop`/`restart`/`status`), `bin/local-start.sh` runs
+one pass locally, `bin/local-stop.sh` stops what is running — but the mechanics of
+putting the pipeline in the background are one thing, in `bin/_start_common.sh`. All
+four source it, so they agree on the PID file (`logs/kdr.pid`), the interpreter
+(`.venv/bin/python`), the argument parser and the pre-flight import: a run started
+by any of them is stopped cleanly by any of the others, and an import failure is
+reported where the user is standing rather than lost to the rotating log.
+
 The pipeline writes one log file, `logs/kdr.log`, that rotates at 10 MB and keeps
 five backups, so a service left running for weeks cannot fill the disk with a
-per-run file. The helper scripts in `bin/` point at that same file and no longer
-keep a second copy of the same stream.
+per-run file. The rotation backups (`logs/kdr.log.*`) are gitignored, and the deploy
+script excludes the whole `logs/` directory rather than only `logs/*.log`.
 
 ### Real-Time Web Dashboard
 
@@ -311,6 +321,7 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 
 ```text
 ├── bin/                 # Process management and deployment scripts (start.sh, daemon.sh, deploy_rpi4.sh)
+│   └── _start_common.sh # The one start/stop library the four entry scripts source
 ├── docs/                # Architecture, deployment, and specification documentation
 │   ├── architecture.md  # Detailed system architecture and component designs
 │   ├── deployment.md    # Nginx reverse proxy and Cloudflare Tunnel setup

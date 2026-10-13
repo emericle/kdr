@@ -93,7 +93,7 @@ rsync -avz --delete \
     --exclude="*.pyc" \
     --exclude=".pytest_cache" \
     --exclude="tests" \
-    --exclude="logs/*.log" \
+    --exclude="logs/*" \
     --exclude=".git" \
     "${SCRIPT_DIR}/src" \
     "${SCRIPT_DIR}/requirements.txt" \

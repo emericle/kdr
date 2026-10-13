@@ -20,6 +20,20 @@ from src.scraper import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_dashboard_thread():
+    """Keep the dashboard's uvicorn thread out of these unit tests.
+
+    `run_worker_threads` starts the dashboard, and that thread outlives the
+    test that started it: a thread still logging when CPython finalizes races
+    the stderr buffer lock, which printed a fatal error after an otherwise
+    green run. The dashboard is exercised where it is owned, in
+    `test_web_server.py`, which stops what it starts.
+    """
+    with patch("src.db_writer._start_dashboard"):
+        yield
+
+
 class TestTickDataclass:
     """Tests for Tick dataclass."""
 
