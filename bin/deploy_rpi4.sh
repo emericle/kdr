@@ -120,27 +120,24 @@ ssh "${TARGET_HOST}" "bash -s" <<'REMOTE_SETUP'
 set -euo pipefail
 cd /var/www/html/kdr/backend
 
-# Detect Python version (3.14, 3.13, or python3)
-PYTHON_BIN=""
-if command -v python3.14 &> /dev/null; then
-    PYTHON_BIN="python3.14"
+# Python policy: 3.13 or greater. Prefer the existing virtualenv; otherwise
+# create one from python3.13, and fail if no interpreter new enough is present.
+if [ -x ".venv/bin/python" ]; then
+    PYTHON_BIN=".venv/bin/python"
 elif command -v python3.13 &> /dev/null; then
-    PYTHON_BIN="python3.13"
-elif command -v python3 &> /dev/null; then
-    PYTHON_BIN="python3"
-fi
-
-if [ -z "$PYTHON_BIN" ]; then
-    echo "Error: Python 3 not found on target host."
+    echo "Creating virtual environment at .venv..."
+    python3.13 -m venv .venv
+    PYTHON_BIN=".venv/bin/python"
+elif command -v python3 &> /dev/null && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null; then
+    echo "Creating virtual environment at .venv..."
+    python3 -m venv .venv
+    PYTHON_BIN=".venv/bin/python"
+else
+    echo "Error: Python 3.13 or greater not found on target host."
     exit 1
 fi
 
 echo "Using Python binary: $PYTHON_BIN"
-
-if [ ! -d ".venv" ]; then
-    echo "Creating virtual environment at .venv..."
-    $PYTHON_BIN -m venv .venv
-fi
 
 echo "Installing/updating dependencies..."
 .venv/bin/pip install --upgrade pip > /dev/null 2>&1

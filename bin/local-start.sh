@@ -65,7 +65,7 @@ fi
 print_status "Setting up KDR Trading System environment..."
 
 # Verify the interpreter the pipeline actually runs on. The application checks
-# for Python 3.14 at startup, so this is the same rule the other entry points
+# for Python 3.13 at startup, so this is the same rule the other entry points
 # apply; there is no separate dependency probe.
 kdr_check_interpreter || exit 1
 
@@ -81,6 +81,7 @@ if [ ! -f ".env" ]; then
     print_warning "Please create a .env file with the required environment variables:"
     echo ""
     echo "Required variables in .env:"
+    # Human hint only; bin/check_env.py is what actually decides the list.
     echo "  ALPACA_API_KEY=your_alpaca_api_key"
     echo "  ALPACA_SECRET_KEY=your_alpaca_secret_key"
     echo "  ADANOS_API_KEY=your_adanos_api_key"
@@ -95,10 +96,28 @@ print_status "Validating environment variables..."
 source .env
 
 check_required_vars() {
-    local required_vars=()
     local missing_vars=()
+    local required_vars=()
+    local required_keys
+    local var
 
-    for var in ALPACA_API_KEY ALPACA_SECRET_KEY ADANOS_API_KEY DATABASE_URL; do
+    # bin/check_env.py is the single source of truth for which variables are
+    # required; read the list from it rather than restating it here. An empty
+    # list is not "nothing is required", it is the checker failing, so it stops
+    # here instead of letting the pipeline start unconfigured.
+    if ! required_keys="$("$PYTHON_BIN" "$KDR_ROOT/bin/check_env.py" --keys 2>/dev/null)"; then
+        print_error "Cannot read the required variables from bin/check_env.py"
+        exit 1
+    fi
+    # Unquoted on purpose: the keys are bare identifiers one per line, and word
+    # splitting is what turns that list into an array (bash 3.2 has no mapfile).
+    required_vars=( $required_keys )
+    if [ ${#required_vars[@]} -eq 0 ]; then
+        print_error "bin/check_env.py named no required variables"
+        exit 1
+    fi
+
+    for var in "${required_vars[@]}"; do
         if [ -z "${!var}" ]; then
             missing_vars+=("$var")
         fi

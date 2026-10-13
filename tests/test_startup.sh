@@ -13,11 +13,11 @@ fi
 
 cd "$PROJECT_ROOT"
 
-# Prefer virtualenv Python if present, then python3.14, then python3
+# Prefer virtualenv Python if present, then python3.13, then python3
 if [ -x "${PROJECT_ROOT}/.venv/bin/python" ]; then
     PYTHON_EXEC="${PROJECT_ROOT}/.venv/bin/python"
-elif command -v python3.14 >/dev/null 2>&1; then
-    PYTHON_EXEC="python3.14"
+elif command -v python3.13 >/dev/null 2>&1; then
+    PYTHON_EXEC="python3.13"
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON_EXEC="python3"
 else

@@ -22,8 +22,8 @@ import signal
 import sys
 import threading
 
-if sys.version_info < (3, 14):
-    print("Error: This application requires Python 3.14 or greater.")
+if sys.version_info < (3, 13):
+    print("Error: This application requires Python 3.13 or greater.")
     sys.exit(1)
 
 # Ensure project root is in sys.path when executed directly

@@ -86,7 +86,7 @@ if [ -n "$PID" ]; then
     exit 1
 fi
 
-# Verify Python 3.14
+# Verify Python 3.13
 kdr_check_interpreter || exit 1
 
 # Verify imports
