@@ -45,7 +45,55 @@ def _transition(action, state):
     return 0.0, _successor(state, 0.0)
 
 
+class TestScoreActions:
+    """The engine exposes the scores as well as the argmax, so a caller can report
+    how sure it is rather than only what it chose."""
+
+    @classmethod
+    def test_score_actions_returns_one_pair_per_candidate(cls):
+        """Every candidate is scored, in candidate order."""
+        state = _state({"AAPL": 150.0}, {"AAPL": 100.0})
+        scored = BellmanEngine().score_actions(
+            state, ["AAPL"], candidate_actions(["AAPL"], {}), _transition, lambda vector: 0.0
+        )
+        assert [action.movement for action, _ in scored] == ["BUY", "SELL", "HOLD"]
+        assert [score for _, score in scored] == [50.0, -50.0, 0.0]
+
+    @classmethod
+    def test_compute_action_is_the_argmax_of_the_scores(cls):
+        """The chosen action is the highest score, and a tie keeps the earlier candidate."""
+        state = _state({"AAPL": 150.0}, {"AAPL": 100.0})
+        candidates = candidate_actions(["AAPL"], {})
+        scored = BellmanEngine().score_actions(state, ["AAPL"], candidates, _transition, lambda vector: 0.0)
+        chosen = BellmanEngine().compute_action(state, ["AAPL"], candidates, _transition, lambda vector: 0.0)
+        assert chosen.movement == max(scored, key=lambda pair: pair[1])[0].movement
+
+    @classmethod
+    def test_score_actions_uses_the_discount_factor(cls):
+        """The discount shapes the scores, not only the choice."""
+        state = _state({"AAPL": 150.0}, {"AAPL": 100.0})
+        value_fn = lambda vector: float(vector[1])  # noqa: E731
+        greedy = BellmanEngine(discount_factor=0.0).score_actions(
+            state, ["AAPL"], candidate_actions(["AAPL"], {}), _transition, value_fn
+        )
+        far_sighted = BellmanEngine(discount_factor=1.0).score_actions(
+            state, ["AAPL"], candidate_actions(["AAPL"], {}), _transition, value_fn
+        )
+        sell_greedy = next(score for action, score in greedy if action.movement == "SELL")
+        sell_farsighted = next(score for action, score in far_sighted if action.movement == "SELL")
+        assert sell_greedy == -50.0
+        assert sell_farsighted == sell_greedy + 200.0
+
+    @classmethod
+    def test_score_actions_on_an_empty_action_space(cls):
+        """No candidates is an empty report; refusing to decide is compute_action's job."""
+        state = _state({"AAPL": 150.0}, {"AAPL": 100.0})
+        assert BellmanEngine().score_actions(state, ["AAPL"], [], _transition, lambda vector: 0.0) == []
+
+
 class TestComputeAction:
+    """The engine must choose an action, not just score one."""
+
     @classmethod
     def test_compute_action_holds_with_the_best_greedy_reward(cls):
         """With every successor worth zero, the engine keeps the greedy reward."""

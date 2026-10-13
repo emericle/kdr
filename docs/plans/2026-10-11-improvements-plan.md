@@ -117,6 +117,41 @@ policy bolted on.
 - **`test` is a symlink to `tests`**, not a second test tree — worth knowing
   before grepping for test files.
 
+## Phase 2b — The model in the live path (found while implementing Phase 2)
+
+Phase 2 made the model correct in isolation, and the review found that the running
+system never consults it: the pipeline and the execution path decided from
+heuristics, and nothing trained or loaded the weights the spec's loop produces.
+Both halves are closed together, because a model that is never fit and a model
+that is never asked are the same gap seen from two sides:
+
+- One reward and successor model (`portfolio_transition` in `src/model.py`) for
+  the live path and the backtest, so a decision and a replay cannot disagree about
+  what a bar was worth.
+- `TradingExecutor.decide` scores the action space and returns the argmax with the
+  scores and a confidence; `StateMapper.build_decision_state` hands it the state.
+- `Backtester.replay` walks stored bars once and answers two questions, so `run()`
+  reports and `train()` fits the same walk; `RLTrainer.fit` is the TD(0) pass,
+  `BACKTEST_TRAIN_EPOCHS` runs it, and `save_model_weights`/`load_value_function`
+  move the parameters across processes.
+
+## Phase 3b/4b — The hygiene batch (found while implementing Phases 3 and 4)
+
+The bugs recorded while the earlier phases ran were unrelated to the task that
+found them, so they were left open and are closed as one batch:
+
+- `logs/` held 105 per-run files (390 MB) rotation could never remove; they are
+  deleted, `.gitignore` covers `logs/kdr.log.*`, and the deploy excludes `logs/*`.
+- The four entry scripts are consolidated onto `bin/_start_common.sh`: one PID file
+  (`logs/kdr.pid`), one interpreter (`.venv/bin/python`), one parser, one
+  pre-flight import.
+- The `import gymnasium` probe in `bin/local-start.sh` is gone; the package it warns
+  about is no longer a dependency.
+- The web server's two layers take distinct logger names.
+- The `--- Logging error ---` flake is fixed where it starts: the pipeline's unit
+  tests keep the dashboard's uvicorn thread out of scope, so no thread outlives the
+  test that started it.
+
 ## Verification
 
 Run after each phase, not just at the end:

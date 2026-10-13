@@ -1,234 +1,109 @@
 #!/bin/bash
+# =============================================================================
+# KDR Complete Pipeline Startup
+# =============================================================================
+# Starts the scraper (Alpaca data ingestion) and web server.
+#
+# Usage:
+#   bin/start.sh             # Start scraper in background, web server in foreground
+#   bin/start.sh --debug     # Enable verbose logging
+#   bin/start.sh --dry-run   # Run without placing orders
+#   bin/start.sh --stop      # Stop the running scraper and free port 8001
+#   bin/start.sh --status    # Report whether the scraper is running
+#   bin/start.sh --help      # Show this help
+#
+# The scraper runs in the background and logs to logs/kdr.log. The web server
+# runs in the foreground and logs to the console.
+#
+# Start/stop mechanics come from _start_common.sh, the same library daemon.sh
+# and local-start.sh use, so every entry point agrees on the PID file, the
+# interpreter, and what a clean shutdown means.
+# =============================================================================
 
-# KDR Startup Script
-# Checks environment variables, sets up venv, and starts the scraper process in background
+KDR_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+source "$KDR_ROOT/bin/_start_common.sh"
 
-set -e  # Exit on error
+# --- Options -------------------------------------------------------------------
+DEBUG_FLAG=""
+DRY_RUN_FLAG=""
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Script directory
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-if [ -f "${SCRIPT_DIR}/../requirements.txt" ]; then
-    PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
-elif [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
-    PROJECT_ROOT="${SCRIPT_DIR}"
-else
-    PROJECT_ROOT="$(pwd)"
-fi
-
-cd "$PROJECT_ROOT"
-
-PID_FILE="${PROJECT_ROOT}/kdr.pid"
-
-# Function to stop the service
-stop_kdr() {
-    if [ -f "$PID_FILE" ]; then
-        local PID=$(cat "$PID_FILE")
-        if ps -p $PID > /dev/null 2>&1; then
-            echo -e "${YELLOW}Stopping KDR service (PID: $PID)...${NC}"
-            kill -TERM $PID 2>/dev/null || true
-            local count=0
-            while ps -p $PID > /dev/null 2>&1; do
-                sleep 1
-                count=$((count + 1))
-                if [ $count -ge 10 ]; then
-                    kill -KILL $PID 2>/dev/null || true
-                    break
-                fi
-            done
-        fi
-        rm -f "$PID_FILE"
-    fi
-
-    # Clean up any lingering scraper processes and listener on port 8001
-    local STALE_PIDS=$(pgrep -f "python.*src/scraper.py" 2>/dev/null || true)
-    if [ -n "$STALE_PIDS" ]; then
-        echo -e "${YELLOW}Cleaning up lingering scraper processes: $STALE_PIDS${NC}"
-        kill -9 $STALE_PIDS 2>/dev/null || true
-    fi
-
-    local PORT_PIDS=$(lsof -ti :8001 -sTCP:LISTEN 2>/dev/null || true)
-    if [ -n "$PORT_PIDS" ]; then
-        echo -e "${YELLOW}Releasing port 8001 listener (PIDs: $PORT_PIDS)...${NC}"
-        kill -9 $PORT_PIDS 2>/dev/null || true
-    fi
-
-    echo -e "${GREEN}✓ KDR service stopped${NC}"
+usage() {
+    echo "Usage: bin/start.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --debug     Enable verbose logging"
+    echo "  --dry-run   Run without placing orders"
+    echo "  --stop      Stop the running scraper and free port 8001"
+    echo "  --status    Report whether the scraper is running"
+    echo "  --help      Show this help"
+    echo ""
+    echo "Logs are written to logs/kdr.log"
 }
 
-if [ "$1" == "stop" ]; then
-    stop_kdr
+kdr_parse_args "$@" || {
+    usage
+    exit 1
+}
+
+if [ "$KDR_HELP" = "1" ]; then
+    usage
     exit 0
 fi
 
-echo "PROJECT_ROOT=${PROJECT_ROOT}"
-echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║        KDR System Startup              ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
-echo ""
-
-# Step 1: Check Python Version
-echo -e "${YELLOW}[1/4]${NC} Checking Python version..."
-PYTHON_CMD=""
-if command -v python3.14 &> /dev/null; then
-    PYTHON_CMD="python3.14"
-elif command -v python3.13 &> /dev/null; then
-    PYTHON_CMD="python3.13"
-elif command -v python3 &> /dev/null && python3 -c 'import sys; exit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null; then
-    PYTHON_CMD="python3"
-fi
-
-if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${RED}Error: Python 3.13+ is required but not found.${NC}"
-    echo -e "${YELLOW}Please install Python 3.13 or 3.14, or add it to your PATH.${NC}"
-    exit 1
-fi
-
-PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
-echo -e "${GREEN}✓ Python version: $PYTHON_VERSION ($PYTHON_CMD)${NC}"
-
-# Step 2: Check Environment Variables
-echo ""
-echo -e "${YELLOW}[2/4]${NC} Checking environment variables..."
-
-# Load .env file if present
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    echo -e "${YELLOW}Loading environment from .env file...${NC}"
-    set -a
-    # Source .env without failing if comments/formatting exist
-    source "$PROJECT_ROOT/.env"
-    set +a
-fi
-
-REQUIRED_VARS=(
-    "ADANOS_API_KEY"
-    "ALPACA_API_KEY"
-    "ALPACA_SECRET_KEY"
-    "DATABASE_URL"
-)
-
-MISSING_VARS=()
-
-for var in "${REQUIRED_VARS[@]}"; do
-    if [ -z "${!var}" ]; then
-        MISSING_VARS+=("$var")
+if [ "$KDR_STOP" = "1" ]; then
+    PID=$(kdr_stop_running)
+    if [ -z "$PID" ]; then
+        echo "scraper not running"
+    else
+        echo "stopped scraper (PID $PID)"
     fi
-done
-
-if [ ${#MISSING_VARS[@]} -ne 0 ]; then
-    echo -e "${RED}✗ Missing required environment variables:${NC}"
-    for var in "${MISSING_VARS[@]}"; do
-        echo -e "${RED}  - $var${NC}"
-    done
-    echo ""
-    echo -e "${YELLOW}Please set up your .env file with all required variables.${NC}"
-    echo -e "${YELLOW}You can find an example .env template in the repository.${NC}"
-    exit 1
+    exit 0
 fi
 
-echo -e "${GREEN}✓ All required environment variables are present${NC}"
-
-# Step 3: Setup/Activate Virtual Environment
-echo ""
-echo -e "${YELLOW}[3/4]${NC} Setting up virtual environment..."
-
-if [ ! -d ".venv" ]; then
-    echo -e "${YELLOW}Creating new virtual environment at .venv...${NC}"
-    $PYTHON_CMD -m venv .venv
-    echo -e "${GREEN}✓ Virtual environment created${NC}"
-else
-    echo -e "${GREEN}✓ Virtual environment already exists${NC}"
-fi
-
-# Activate virtual environment
-echo -e "${YELLOW}Activating virtual environment...${NC}"
-source .venv/bin/activate
-
-# Upgrade pip
-echo -e "${YELLOW}Upgrading pip...${NC}"
-$PYTHON_CMD -m pip install --upgrade pip setuptools wheel 
-#pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-
-# Install/update requirements
-echo -e "${YELLOW}Installing dependencies...${NC}"
-python -m pip install -r requirements.txt > /dev/null 2>&1
-echo -e "${GREEN}✓ Dependencies installed${NC}"
-
-# Step 4: Start KDR Service in Background
-echo ""
-echo -e "${YELLOW}[4/4]${NC} Starting KDR service in background..."
-
-# Create logs directory if it doesn't exist
-mkdir -p logs
-
-# Create PID file for process management
-# One rotating log: src/scraper.py caps it and rotates it, so a long running
-# service cannot fill the disk with a per-run file.
-LOG_FILE="${PROJECT_ROOT}/logs/kdr.log"
-
-# Parse arguments for the main process
-ARGS=()
-for arg in "$@"; do
-    # Skip unsupported short flags
-    if [ "$arg" == "-d" ]; then
-        echo -e "${YELLOW}Note: Use --debug (not -d) for debug mode${NC}"
-        continue
+if [ "$KDR_STATUS" = "1" ]; then
+    PID=$(kdr_running_pid)
+    if [ -n "$PID" ]; then
+        echo "scraper running (PID $PID)"
+    else
+        echo "scraper not running"
     fi
-    # Include supported flags
-    if [ "$arg" == "--debug" ]; then
-        ARGS+=("$arg")
-        echo -e "${YELLOW}Debug mode enabled${NC}"
-    elif [ "$arg" == "start" ]; then
-        echo -e "${GREEN}✓ Starting KDR service${NC}"
-    fi
-done
+    exit 0
+fi
 
-# Set PYTHONPATH to include the project root for module imports
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+if [ -n "$PARSE_DEBUG" ]; then
+    DEBUG_FLAG="--debug"
+fi
+if [ -n "$PARSE_DRY_RUN" ]; then
+    DRY_RUN_FLAG="--dry-run"
+fi
 
-# Fail visibly if the pipeline cannot even be imported; the background run
-# below sends its output to the rotating log, not to a terminal.
-if ! IMPORT_ERROR=$(PYTHONPATH="${PYTHONPATH}:$(pwd)" .venv/bin/python -c "import src.scraper" 2>&1); then
-    echo -e "${RED}✗ scraper.py cannot be imported:${NC}"
-    echo "$IMPORT_ERROR"
+# --- Pre-flight ----------------------------------------------------------------
+
+# Check if scraper is already running
+PID=$(kdr_running_pid)
+if [ -n "$PID" ]; then
+    echo "warning: scraper already running (PID $PID); restart it first"
     exit 1
 fi
 
-# Start the process in background and redirect output to log file
-echo -e "${GREEN}Starting KDR Data Ingestion Pipeline & Real-Time Dashboard${NC}"
-echo -e "${BLUE}  ➔ Real-Time Dashboard: http://localhost:8001${NC}"
-echo -e "${YELLOW}  (Open this URL in Chrome or Firefox to monitor live data & decisions)${NC}"
+# Verify Python 3.14
+kdr_check_interpreter || exit 1
+
+# Verify imports
+echo "Verifying imports..."
+kdr_preflight_import || exit 1
+
+# --- Start Scraper -------------------------------------------------------------------
+echo ""
+echo "Starting scraper..."
+kdr_start_background "${KDR_LOG}"
+
+# --- Start Web Server (foreground) ---------------------------------------------------
+echo ""
+echo "Starting web server..."
+echo "  URL: http://localhost:8001"
+echo "  Press Ctrl+C to stop"
 echo ""
 
-# Run the main process in background
-# stdout and stderr go to /dev/null: src/scraper.py writes every log record to
-# the rotating file itself, and a second copy of the same stream is what grew
-# logs/ past hundreds of megabytes.
-nohup .venv/bin/python src/scraper.py "${ARGS[@]}" >/dev/null 2>&1 &
-PID=$!
-
-# Save PID
-echo $PID > "$PID_FILE"
-
-# Wait a moment to verify process started
-sleep 2
-
-if ps -p $PID > /dev/null; then
-    echo -e "${GREEN}✓ KDR service started successfully (PID: $PID)${NC}"
-    echo -e "${GREEN}✓ Log file: $LOG_FILE${NC}"
-    echo ""
-    echo -e "${YELLOW}To check status, run: tail -f $LOG_FILE${NC}"
-    echo -e "${YELLOW}To stop the service, run: ./bin/start.sh stop${NC}"
-else
-    echo -e "${RED}✗ Failed to start KDR service${NC}"
-    echo -e "${RED}Check log file for details: $LOG_FILE${NC}"
-    exit 1
-fi
-
-exit 0
+# Start web server in foreground
+.venv/bin/python -m src.web_server "$DEBUG_FLAG" "$DRY_RUN_FLAG"

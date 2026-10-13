@@ -562,3 +562,39 @@ class DatabaseManager:
         finally:
             self.connection.close(session)
 
+    def save_model_weights(self, symbol: str, weights: dict, last_trained: datetime | None = None) -> bool:
+        """Persist the weights a training pass produced, so the next process can load them.
+
+        ``symbol`` is the key :meth:`get_model_weights` reads back with. A value
+        function is fit over a whole state vector, so when the vector covers
+        several symbols the key is those symbols joined with a comma: the layout
+        the weights belong to has to be recorded, because a vector of the wrong
+        length is a silent nonsense decision rather than an error.
+
+        Returns:
+            True when the record was written, False when there is no database to
+            write it to.
+        """
+        session = self.connection.get_session()
+        if not session:
+            return False
+        try:
+            payload = json.dumps(weights)
+            trained_at = last_trained if last_trained is not None else now_utc()
+            existing = session.query(ModelWeightsModel).filter_by(symbol=symbol).first()
+            if existing:
+                existing.weights_json = payload
+                existing.last_trained = trained_at
+            else:
+                session.add(
+                    ModelWeightsModel(
+                        symbol=symbol,
+                        last_trained=trained_at,
+                        weights_json=payload,
+                    )
+                )
+            session.commit()
+            return True
+        finally:
+            self.connection.close(session)
+

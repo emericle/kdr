@@ -27,7 +27,7 @@ from src.web_server.data_layer import (
     market_buffer,
 )
 
-logger = logging.getLogger("WebServer")
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================

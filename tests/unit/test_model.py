@@ -10,7 +10,7 @@ from src.domain import (
     TradeMovement,
     candidate_actions,
 )
-from src.model import BellmanEngine, LinearValueFunction, RLTrainer
+from src.model import BellmanEngine, LinearValueFunction, RLTrainer, load_value_function
 
 
 class TestValueFunctionProtocol:
@@ -275,3 +275,76 @@ class TestLinearValueFunction:
         vf.predict(np.array([1.0, 2.0], dtype=np.float32))
         with pytest.raises(ValueError):
             vf.predict(np.array([1.0], dtype=np.float32))
+
+
+class TestTrainedWeights:
+    """A training pass has to be readable back by the next process."""
+
+    def test_to_dict_round_trips_the_parameters(self):
+        """What is stored must come back as the same function, not a new one."""
+        vf = LinearValueFunction(weights=[0.5, -0.25, 0.0, 1.0], bias=0.75)
+        restored = LinearValueFunction.from_dict(vf.to_dict())
+        assert list(restored.weights) == [0.5, -0.25, 0.0, 1.0]
+        assert restored.bias == 0.75
+
+    def test_an_untrained_function_stores_nothing_and_reads_back_as_untrained(self):
+        """Nothing has been fit, so there are no weights, and reading that back still decides."""
+        vf = LinearValueFunction()
+        assert vf.to_dict() == {"weights": [], "bias": 0.0}
+        assert LinearValueFunction.from_dict({"weights": [], "bias": 0.0}).weights is None
+
+    def test_fit_walks_every_transition(self):
+        """One pass over three transitions applies three TD(0) steps."""
+        vf = LinearValueFunction()
+        trainer = RLTrainer(BellmanEngine(), vf)
+        vector = np.array([1.0], dtype=np.float32)
+        transitions = [(vector, 10.0, vector)] * 3
+
+        before = vf.predict(vector)
+        steps = trainer.fit(transitions)
+        after = vf.predict(vector)
+
+        assert steps == 3
+        assert after > before
+        assert trainer.fit([]) == 0
+
+    def test_load_value_function_reads_back_what_was_stored(self):
+        """The live path's model is the weights a previous training pass wrote."""
+
+        class Stub:
+            def get_model_weights(self, key):
+                return {"weights": [0.5, -0.25, 0.0, 1.0], "bias": 0.75}
+
+        restored = load_value_function(Stub(), ["AAPL"])
+        assert list(restored.weights) == [0.5, -0.25, 0.0, 1.0]
+        assert restored.bias == 0.75
+
+    def test_the_key_names_the_vector_the_weights_were_fit_for(self):
+        """A multi-symbol vector is stored under the whole symbol list, not one symbol."""
+        keys = []
+
+        class Stub:
+            def get_model_weights(self, key):
+                keys.append(key)
+                return
+
+        load_value_function(Stub(), ["AAPL", "TSLA"])
+        assert keys == ["AAPL,TSLA"]
+
+    def test_load_value_function_drops_a_vector_of_another_length(self):
+        """Weights fit for another layout would score nonsense; start over instead."""
+
+        class Stub:
+            def get_model_weights(self, key):
+                return {"weights": [0.1] * 7, "bias": 0.0}
+
+        assert load_value_function(Stub(), ["AAPL"]).weights is None
+
+    def test_load_value_function_starts_untrained_without_a_record(self):
+        """A process that has never trained still has to decide."""
+
+        class Stub:
+            def get_model_weights(self, key):
+                return None
+
+        assert load_value_function(Stub(), ["AAPL"]).weights is None

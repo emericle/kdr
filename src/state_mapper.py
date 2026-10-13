@@ -5,6 +5,7 @@ from src.config_gatekeeper import validate_configs
 from src.data_adapters import AlpacaDataAdapter
 from src.domain import FullState, MarketState, PortfolioState
 from src.sentiment_adapter import AdanosDataAdapter
+from src.times import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,65 @@ class StateMapper:
             market=market_state,
             portfolio=portfolio_state,
             timestamp=None
+        )
+
+    def build_decision_state(
+        self,
+        symbol: str,
+        price: float,
+        previous_price: float | None = None,
+        sentiment_score: float = 0.5,
+        cash: float = 0.0,
+        holdings: dict[str, float] | None = None,
+    ) -> FullState:
+        """
+        Build the :class:`FullState` the Bellman decision model scores a bar against.
+
+        This is the state the live path hands :meth:`TradingExecutor.decide`, and
+        it is shaped for the vectorizer rather than for an API response:
+
+        * ``previous_price`` is the baseline the price change is measured against.
+          The normalized vector's first feature is the log change from it, so a
+          caller that knows the bar's open passes that, and one that does not
+          repeats the price, which makes the change 0 rather than inventing one.
+        * ``sentiment_score`` defaults to 0.5, the neutral point of the
+          ``MarketState`` 0-to-1 scale, so a run without Adanos data scores on
+          price alone instead of on a false negative.
+        * ``cash`` and ``holdings`` are the portfolio the decision is for; the
+          vector carries the position flag and cash as a fraction of portfolio
+          value, so a decision is only comparable to another run's when the
+          caller says what the portfolio held.
+
+        Args:
+            symbol: The symbol the decision is for.
+            price: The price observed now.
+            previous_price: The price the change is measured against.
+            sentiment_score: Adanos score for the symbol, on the configured scale.
+            cash: Available cash.
+            holdings: Quantity held per symbol.
+
+        Returns:
+            A FullState whose vector is the same length as any other state built
+            for the same symbol list.
+
+        Raises:
+            ValueError: If ``price`` is not positive, which is what makes the log
+                change and the position sizing ambiguous rather than merely large.
+        """
+        if price <= 0:
+            raise ValueError(f"Cannot build a decision state from a non-positive price: {price}")
+        baseline = previous_price if previous_price is not None and previous_price > 0 else price
+        return FullState(
+            market=MarketState(
+                prices={symbol: float(price)},
+                previous_prices={symbol: float(baseline)},
+                sentiment_scores={symbol: float(sentiment_score)},
+            ),
+            portfolio=PortfolioState(
+                cash=max(float(cash), 0.0),
+                holdings={s: float(q) for s, q in (holdings or {}).items() if q > 0},
+            ),
+            timestamp=now_utc(),
         )
 
     def aggregate_state_from_components(

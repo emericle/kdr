@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+from src.domain import Action, FullState, candidate_actions
+from src.model import POSITION_WEIGHT, BellmanEngine, LinearValueFunction, portfolio_transition
 from src.times import now_utc
 
 logger = logging.getLogger("TradingExecution")
@@ -363,12 +365,111 @@ class TradingExecutor:
         alpaca_client: AlpacaClient,
         risk_manager: RiskManager | None = None,
         order_tracker: OrderTracker | None = None,
-        order_validator: OrderValidator | None = None
+        order_validator: OrderValidator | None = None,
+        engine: BellmanEngine | None = None,
+        value_function: LinearValueFunction | None = None,
+        position_weight: float = POSITION_WEIGHT,
+        cash: float = 100_000.0,
     ):
         self.alpaca_client = alpaca_client
         self.risk_manager = risk_manager or RiskManager()
         self.order_tracker = order_tracker or OrderTracker()
         self.order_validator = order_validator or OrderValidator()
+        # The model the spec asks for, not a placeholder: a decision is the argmax
+        # of the scored action space, and the value function is the one the
+        # training loop fits (see :meth:`RLTrainer.train_step`). Zero weights mean
+        # "score on the immediate reward only", which is a working policy, not a
+        # crash, so a process that has not loaded trained weights still decides.
+        self.engine = engine or BellmanEngine()
+        self.value_function = value_function or LinearValueFunction()
+        self.position_weight = position_weight
+        self.cash = cash
+
+    def decide(
+        self,
+        state: FullState,
+        symbol: str | None = None,
+    ) -> tuple[Action, dict[str, Any]]:
+        """Ask the Bellman engine what to do with one state.
+
+        The action space is :func:`candidate_actions` for the symbol the state is
+        about, the reward model is :func:`portfolio_transition` (the same one the
+        backtest replays), and the winner is the argmax of ``r + γ·V(s')``. When
+        that argmax ties with HOLD the executor holds instead: the engine is a
+        pure argmax and keeps the first candidate, which is BUY, but an
+        indifferent portfolio manager does not buy.
+
+        Args:
+            state: The state to decide on, as built by
+                :meth:`StateMapper.build_decision_state`.
+            symbol: The symbol to decide for; required when the state carries
+                more than one.
+
+        Returns:
+            The chosen action and a report with the action name, a confidence,
+            the winning score and every candidate's score. The confidence is how
+            far the winner is ahead of the runner-up as a fraction of the whole
+            spread, so an indifferent state scores 0.5 and a state where one
+            action dominates scores near 1.0.
+
+        Raises:
+            ValueError: If the symbol to decide for cannot be determined from the
+                state.
+        """
+        if symbol is None:
+            if len(state.symbols) != 1:
+                raise ValueError(
+                    f"decide needs one symbol when the state carries {len(state.symbols)}"
+                )
+            symbol = state.symbols[0]
+        elif symbol not in state.market.prices:
+            raise ValueError(f"The state carries no price for {symbol}")
+
+        candidates = candidate_actions([symbol], {})
+        scored = self.engine.score_actions(
+            state,
+            state.symbols,
+            candidates,
+            lambda action, current: portfolio_transition(action, current, self.position_weight),
+            self.value_function.predict,
+        )
+        best_action, best_score = max(scored, key=lambda pair: pair[1])
+
+        # An indifferent state is not an instruction to trade. The engine's argmax
+        # keeps the earlier candidate on a tie, which would be BUY because that is
+        # the order the action space is enumerated in; a portfolio manager who is
+        # indifferent holds, so a tie with HOLD's score decides HOLD. The engine
+        # itself stays a pure argmax, and this is the executor's policy.
+        hold = next((pair for pair in scored if pair[0].movement == "HOLD"), None)
+        if hold is not None and best_score - hold[1] <= 1e-12:
+            best_action, best_score = hold
+
+        values = [score for _, score in scored]
+        spread = max(values) - min(values)
+        if spread > 0.0:
+            runner_up = sorted(values)[-2]
+            confidence = 0.5 + 0.5 * (best_score - runner_up) / spread
+        else:
+            # Every candidate scores the same: the model has nothing to say, and
+            # 0.5 is the midpoint of the confidence the dashboard expects.
+            confidence = 0.5
+
+        return best_action, {
+            "symbol": symbol,
+            "action": self._movement_name(best_action),
+            "confidence": round(confidence, 2),
+            "score": best_score,
+            "values": {self._movement_name(action): score for action, score in scored},
+        }
+
+    def _movement_name(self, action: Action) -> str:
+        """The movement an :class:`Action` carries, as the string the dashboard expects.
+
+        ``Action.movement`` is optional because an action can also be continuous
+        (target weights), so the field has to be unwrapped here rather than at
+        every use site. An action that names no movement is a hold.
+        """
+        return action.movement.value if action.movement is not None else "HOLD"
 
     def _movement_of(self, action: Any) -> str | None:
         """The trade movement as an uppercase string, however the action carries it."""
@@ -564,7 +665,55 @@ class TradingExecutor:
             "price": order_record.price or current_price
         })
 
+        # The cash the next decision is scored against. An executed order moves it,
+        # and a rejected one (no fill) leaves it alone, so a run that keeps being
+        # refused does not pretend its portfolio is shrinking.
+        filled = float(order_record.filled_qty or 0.0)
+        if filled > 0.0:
+            traded_value = filled * float(order_record.price or current_price)
+            if order_record.side == "buy":
+                self.cash = max(self.cash - traded_value, 0.0)
+            elif order_record.side == "sell":
+                self.cash += traded_value
+
         return order_record
+
+    def decide_and_execute(
+        self,
+        state: FullState,
+        symbol: str | None = None,
+        win_rate: float = 0.6,
+        win_loss_ratio: float = 2.0
+    ) -> OrderRecord | None:
+        """Decide with the Bellman engine, then execute the order that survives risk management.
+
+        The price, cash and holdings come out of the :class:`FullState` the caller
+        handed in rather than out of the arguments, so the state the model scored
+        is the state the order was sized against.
+
+        Args:
+            state: The state to decide on.
+            symbol: The symbol to decide for; required when the state carries
+                more than one.
+            win_rate: Passed to Kelly sizing.
+            win_loss_ratio: Passed to Kelly sizing.
+
+        Returns:
+            The order the broker returned, or ``None`` when the model held or the
+            order did not survive sizing, validation or the risk manager.
+        """
+        action, _report = self.decide(state, symbol)
+        decided = symbol if symbol is not None else state.symbols[0]
+        return self.execute_decision(
+            action=action,
+            symbol=decided,
+            current_price=state.market.prices[decided],
+            portfolio_cash=state.portfolio.cash,
+            current_shares=int(state.portfolio.holdings.get(decided, 0.0)),
+            portfolio_value=state.portfolio_value(),
+            win_rate=win_rate,
+            win_loss_ratio=win_loss_ratio
+        )
 
 
 

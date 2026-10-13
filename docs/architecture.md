@@ -45,6 +45,26 @@ Two policies are enforced by that config rather than by review comments:
   the blocking stream loop, the dashboard's start/stop, one websocket connection,
   one broadcast tick) where the alternative is to end the process; each carries a
   comment saying so.
+- **One start, four questions.** `bin/_start_common.sh` owns the mechanics of
+  putting the pipeline in the background — the PID file (`logs/kdr.pid`), the
+  interpreter (`.venv/bin/python`), the argument parser, the pre-flight import — and
+  `bin/start.sh`, `bin/daemon.sh`, `bin/local-start.sh` and `bin/local-stop.sh` source
+  it. The scripts answer different questions for a user; they must not answer them
+  with different mechanics, because a run started by one was otherwise stopped
+  cleanly only when a different one was told to stop it.
+
+Two more rules the suite and the logs depend on:
+
+- **A test does not leave a thread behind.** `run_worker_threads` starts the
+  dashboard's uvicorn thread, and the pipeline's unit tests patch
+  `_start_dashboard` so nothing outlives the test that started it. A daemon thread
+  still logging while CPython finalizes races the stderr buffer lock, which printed
+  a fatal error after an otherwise green run; joining what survived only kept it
+  logging longer, which is why that attempt made the flake more frequent.
+- **One logger name per layer.** Each module takes its own name, so a reviewer can
+  tell `src.web_server.data_layer` from `src.web_server.api_layer` in the log. The
+  pipeline modules deliberately share `DataIngestion`, because there the name is
+  saying that one stream is one stream.
 
 ---
 
@@ -63,15 +83,17 @@ Provides strictly validated Pydantic data schemas used across all components:
 `to_vector` emits `3 * len(symbols) + 1` scaled features per state: log price change, sentiment rescaled onto roughly [-1, 1] using the configured bounds, a position flag, then cash as a fraction of portfolio value. `KDR_STATE_VECTOR_SCHEMA` gates the layout: `normalized` (default) emits the scaled features, `legacy` reproduces the raw pre-normalization features (price, holding, sentiment, cash) so a run under either flag can be compared feature by feature. `legacy_vector` and `normalized_vector` are also callable directly when a caller wants both layouts from one state.
 
 ### 2. Decision Engine & Reinforcement Learning (`src/model.py`)
-- `BellmanEngine`: Scores every candidate action as `r + γ·V(s')` and returns the argmax, so `discount_factor` shapes the decision; `compute_target_q` is the same expression the training loop fits.
-- `LinearValueFunction`: The concrete TD(0) value function `V(s) = w·s + b`; `update` moves the weights toward a Bellman target by the learning rate.
-- `RLTrainer`: TD(0) training loop that asks the engine for a target and hands it to the value function.
+- `BellmanEngine`: Scores every candidate action as `r + γ·V(s')` and returns the argmax, so `discount_factor` shapes the decision; `score_actions` returns every candidate's score in candidate order, which is what a caller needs to report how sure it is, and `compute_action` is the argmax of it. `compute_target_q` is the same expression the training loop fits.
+- `portfolio_transition`: The environment's reward and successor model — the signed price change an action captured, with a BUY spending `position_weight` of cash and a SELL releasing the same fraction of portfolio value. It lives here rather than in the harness so the live path and the backtest score against one model.
+- `LinearValueFunction`: The concrete TD(0) value function `V(s) = w·s + b`; `update` moves the weights toward a Bellman target by the learning rate, and `to_dict`/`from_dict` carry the parameters to and from the `model_weights` table.
+- `RLTrainer`: TD(0) training loop; `train_step` is one step and `fit` applies one pass over `(state vector, reward, next state vector)` triples.
 - `ValueFunction`: Protocol defining state value estimation; `LinearValueFunction` satisfies it.
+- `load_value_function`: Reads the stored parameters for a symbol list, sizing check included — a record whose vector length does not match the layout is dropped rather than scored against, and no record means an untrained function.
 
 The engine is handed two functions rather than a policy: `transition(action, state)` returns the immediate reward and the successor state, and `value_fn(state_vector)` estimates a successor's value. The caller therefore owns the reward and transition model, and the engine owns the maximization.
 
-### 2b. Backtesting (`src/backtest.py`)
-`Backtester` replays stored bars from PostgreSQL through the same state, action space and engine the live system uses, as a paper portfolio that never touches the broker. `run()` returns the decision count, starting and ending portfolio value, return, mean reward and one entry per decision; `summarize()` renders the one line the CLI prints. Run it with `BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest`, optionally setting `BACKTEST_CASH` and `BACKTEST_MINUTES`. `_transition` is the harness's reward model: the signed price change the action captured, with a BUY spending `position_weight` of cash and a SELL releasing the same fraction.
+### 2b. Backtesting & Training (`src/backtest.py`)
+`Backtester.replay` walks stored bars from PostgreSQL through the same state, action space and engine the live system uses, and returns both what the policy did (one entry per bar) and the `(state vector, reward, next state vector)` triples a training step fits — one walk answers both questions, so a report and a training pass cannot drift apart. `run()` turns the decisions into the report the CLI prints (decision count, starting and ending portfolio value, return, mean reward, one entry per decision); `train()` applies one TD(0) pass per epoch over the triples, which makes it on policy: the transition a step learns from is the one the current policy took. `summarize()` renders the one line. Run it with `BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest`, optionally setting `BACKTEST_CASH`, `BACKTEST_MINUTES` and `BACKTEST_TRAIN_EPOCHS` (default 0); a training pass writes the fitted parameters to the `model_weights` table under the symbol list the vector covers, which is what the live path loads.
 
 ### 3. Data Pipeline & Adapters
 
@@ -85,11 +107,13 @@ import AlpacaStreamProcessor` still resolves:
   - `DataStreamBuffer`: Thread-safe, $O(1)$ running OHLCV state aggregation and fast minute key generation, avoiding per-tick string formatting and $O(5N)$ traversals.
 - **DB writer (`src/db_writer.py`)**:
   - `DBWriterWorker`: Background worker draining tick and bar queues in batches for single-transaction persistence.
-  - `run_worker_threads`: the thread orchestration the entry point calls.
+  - `run_worker_threads`: the thread orchestration the entry point calls. It builds one `TradingExecutor` for the run, whose value function is the parameters `load_value_function` reads from the `model_weights` table for the symbols being traded, so a trained process decides with what it trained.
+  - The writer carries that executor and maps every bar through it, so the decision the dashboard shows is the model's argmax rather than a momentum heuristic; a writer built without an executor keeps the heuristic, which makes the two paths visibly different instead of silently different.
 - **Logging (`src/logging_config.py`)**:
   - The only module that builds handlers. `configure_logging` is called once, from an entrypoint's `main`, never at import, so importing a module cannot reconfigure global logging or open the log file. Logging goes to one rotating file, `logs/kdr.log`, capped at 10 MB with five backups, rather than a fresh file per run.
 - **State Mapper (`src/state_mapper.py`)**:
   - Single-pass transformations mapping incoming raw ticks and bars into structured `MarketState` and `FullState` objects.
+  - `build_decision_state` builds the `FullState` the live path hands `TradingExecutor.decide`: the price the bar observed against the baseline the change is measured against (the bar's open when the caller knows it, otherwise the price itself, so no change is invented), sentiment defaulting to the neutral point of the configured scale, and the cash and holdings the decision belongs to.
 - **Sentiment & Data Adapters (`src/sentiment_adapter.py`, `src/data_adapters.py`)**:
   - `AdanosSentimentAdapter`: Queries Adanos API for sentiment scores and correlates sentiment with price action.
 - **Persistence (`src/database.py`)**:
@@ -110,6 +134,10 @@ import AlpacaStreamProcessor` still resolves:
 - `OrderTracker`: Incremental $O(1)$ position tracking that records order history and net position state.
 - `AlpacaClient`: REST interface for order placement, account queries, and position retrieval with connection pooling (`requests.Session`).
 - `TradingExecutor`: Coordinates Bellman model decisions through `RiskManager` and submits validated orders to `AlpacaClient`.
+  - `decide(state, symbol)` asks the model: it scores `candidate_actions` for the symbol with `BellmanEngine.score_actions` using `portfolio_transition` as the reward model, and returns the argmax plus a report (the action, every candidate's score, and a confidence that is how far the winner is ahead of the runner-up as a fraction of the whole spread). It places no order and mutates nothing. A state that does not name exactly one symbol raises rather than guessing.
+  - A tie with `HOLD` decides `HOLD` in the executor: the engine stays a pure argmax and keeps the earlier candidate, but an indifferent portfolio manager holds rather than trading at the enumeration's accident.
+  - `decide_and_execute` runs that decision through `translate_decision`, `OrderValidator` and `RiskManager` and places what survives, sizing against the state the model scored rather than against separate arguments.
+  - `execute_decision` moves the executor's own `cash` by what a filled order actually traded, so the next decision is scored against a portfolio that reflects what ran; a rejected order leaves cash alone.
 
 ### 5. Web Server & Live Dashboard (`src/web_server/`, `src/static/dashboard.html`)
 

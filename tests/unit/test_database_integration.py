@@ -108,6 +108,30 @@ def contract_model_weights_unknown_symbol(db: DatabaseManager) -> None:
         raise AssertionError(f"get_model_weights for an unknown symbol returned {result!r}")
 
 
+def contract_model_weights_writer(db: DatabaseManager, symbol: str) -> None:
+    """save_model_weights must write the record get_model_weights reads back.
+
+    A second write for the same key updates rather than duplicates, because the
+    table's key column is unique and a training pass runs more than once.
+    """
+    weights = {"weights": [0.25, -0.5, 0.0, 1.0], "bias": 0.125}
+    if not db.save_model_weights(symbol, weights):
+        raise AssertionError("save_model_weights reported no session to write to")
+    stored = db.get_model_weights(symbol)
+    if stored != weights:
+        raise AssertionError(
+            f"save_model_weights({symbol!r}, {weights!r}) read back as {stored!r}"
+        )
+
+    updated = {"weights": [1.0], "bias": 0.0}
+    db.save_model_weights(symbol, updated)
+    rows = _session(db).query(ModelWeightsModel).filter_by(symbol=symbol).all()
+    if len(rows) != 1:
+        raise AssertionError(f"a second write left {len(rows)} records for one key")
+    if db.get_model_weights(symbol) != updated:
+        raise AssertionError(f"the second write left {db.get_model_weights(symbol)!r}, expected {updated!r}")
+
+
 def contract_query_api_rejects_unknown_column(db: DatabaseManager) -> None:
     """The filter API get_model_weights relies on must be real and must validate columns.
 
@@ -372,6 +396,9 @@ class TestSqliteContract(unittest.TestCase):
     def test_model_weights_unknown_symbol_yields_none(self):
         contract_model_weights_unknown_symbol(self.db)
 
+    def test_save_model_weights_writes_and_updates(self):
+        contract_model_weights_writer(self.db, self.symbol)
+
     def test_query_api_rejects_unknown_column(self):
         contract_query_api_rejects_unknown_column(self.db)
 
@@ -403,6 +430,7 @@ class TestQaDatabaseContract(unittest.TestCase):
         try:
             contract_model_weights_round_trip(db, SENTINEL_SYMBOL)
             contract_model_weights_unknown_symbol(db)
+            contract_model_weights_writer(db, SENTINEL_SYMBOL + "W")
             contract_query_api_rejects_unknown_column(db)
             contract_market_data_batch(db, SENTINEL_SYMBOL)
             # Each market-data contract counts its own rows, so each gets a

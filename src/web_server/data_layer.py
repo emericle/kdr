@@ -19,7 +19,7 @@ from typing import Any
 from src.database import DB_FAILURES
 from src.times import epoch_seconds, hhmmss, now_utc, to_utc
 
-logger = logging.getLogger("WebServer")
+logger = logging.getLogger(__name__)
 
 # A dashboard read is allowed to fail: the route answers with what the buffers
 # have and the next refresh tries again. This names the failures that mean

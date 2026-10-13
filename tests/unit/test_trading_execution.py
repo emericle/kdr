@@ -581,3 +581,164 @@ class TestTradingExecutor:
         assert res is None
 
 
+class TestBellmanDecision:
+    """The live path asks the Bellman engine what to do; it does not guess."""
+
+    def test_decide_scores_the_action_space_and_returns_the_argmax(self):
+        """A bar that rose 50 from its open scores BUY at 50 and decides BUY."""
+        from src.state_mapper import StateMapper
+        from src.trading_execution import TradingExecutor
+
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=150.0, previous_price=100.0, cash=1000.0
+        )
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        action, report = executor.decide(state)
+
+        assert action.movement == "BUY"
+        assert report["action"] == "BUY"
+        assert report["symbol"] == "AAPL"
+        assert report["values"] == {"BUY": 50.0, "SELL": -50.0, "HOLD": 0.0}
+        # The winner is 50 ahead of the runner-up over a spread of 100.
+        assert report["confidence"] == 0.75
+
+    def test_decide_holds_when_the_model_is_indifferent(self):
+        """A flat bar scores every movement the same, and an indifferent portfolio holds."""
+        from src.state_mapper import StateMapper
+        from src.trading_execution import TradingExecutor
+
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=150.0, previous_price=150.0, cash=1000.0
+        )
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        action, report = executor.decide(state)
+
+        assert action.movement == "HOLD"
+        assert report["confidence"] == 0.5
+
+    def test_a_value_function_that_dislikes_positions_decides_hold(self):
+        """The trained weights, not the reward, can be what stops a BUY."""
+        from src.model import LinearValueFunction
+        from src.state_mapper import StateMapper
+        from src.trading_execution import TradingExecutor
+
+        # The third normalized feature is the position flag, so a large negative
+        # weight there is a model that says "being in this position is bad".
+        executor = TradingExecutor(
+            alpaca_client=MagicMock(),
+            value_function=LinearValueFunction(weights=[0.0, 0.0, -1000.0, 0.0]),
+        )
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=150.0, previous_price=100.0, cash=1000.0
+        )
+        action, report = executor.decide(state)
+
+        assert report["values"]["BUY"] < report["values"]["HOLD"]
+        assert action.movement == "HOLD"
+
+    def test_decide_refuses_a_state_that_does_not_name_one_symbol(self):
+        """Guessing which symbol a multi-symbol state is about would be a bug."""
+        from src.domain import FullState, MarketState, PortfolioState
+        from src.trading_execution import TradingExecutor
+
+        state = FullState(
+            market=MarketState(
+                prices={"AAPL": 150.0, "TSLA": 300.0},
+                previous_prices={"AAPL": 150.0, "TSLA": 300.0},
+                sentiment_scores={"AAPL": 0.5, "TSLA": 0.5},
+            ),
+            portfolio=PortfolioState(cash=1000.0, holdings={}),
+        )
+        executor = TradingExecutor(alpaca_client=MagicMock())
+
+        with pytest.raises(ValueError, match="needs one symbol"):
+            executor.decide(state)
+        with pytest.raises(ValueError, match="no price for"):
+            executor.decide(state, symbol="NVDA")
+
+    def test_cash_follows_a_filled_order(self):
+        """A fill moves the cash the next decision is scored against; a rejection does not."""
+        from src.domain import TradeMovement
+        from src.trading_execution import AlpacaClient, OrderRecord, TradingExecutor
+
+        mock_client = MagicMock(spec=AlpacaClient)
+        mock_client.submit_order.return_value = OrderRecord(
+            id="ord-1",
+            symbol="AAPL",
+            quantity=10,
+            filled_qty=10,
+            side="buy",
+            order_type="market",
+            status="filled",
+            price=150.0,
+        )
+        executor = TradingExecutor(alpaca_client=mock_client)
+        executor.execute_decision(
+            action=TradeMovement.BUY,
+            symbol="AAPL",
+            current_price=150.0,
+            portfolio_cash=10000.0,
+            portfolio_value=10000.0,
+        )
+        assert executor.cash == 100_000.0 - 10 * 150.0
+
+        mock_client.submit_order.return_value = OrderRecord(
+            id="ord-2",
+            symbol="AAPL",
+            quantity=10,
+            filled_qty=0,
+            side="buy",
+            order_type="market",
+            status="rejected",
+        )
+        executor.execute_decision(
+            action=TradeMovement.BUY,
+            symbol="AAPL",
+            current_price=150.0,
+            portfolio_cash=10000.0,
+            portfolio_value=10000.0,
+        )
+        assert executor.cash == 100_000.0 - 10 * 150.0
+
+    def test_decide_and_execute_places_the_modelled_order(self):
+        """The state the model scored is the state the order was sized against."""
+        from src.state_mapper import StateMapper
+        from src.trading_execution import AlpacaClient, OrderRecord, TradingExecutor
+
+        mock_client = MagicMock(spec=AlpacaClient)
+        mock_client.submit_order.return_value = OrderRecord(
+            id="ord-3",
+            symbol="AAPL",
+            quantity=20,
+            filled_qty=20,
+            side="buy",
+            order_type="market",
+            status="filled",
+            price=100.0,
+        )
+        executor = TradingExecutor(alpaca_client=mock_client)
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=100.0, previous_price=90.0, cash=10000.0
+        )
+
+        executed = executor.decide_and_execute(state)
+
+        assert executed is not None
+        assert executed.side == "buy"
+        assert executor.cash == 100_000.0 - 20 * 100.0
+
+    def test_decide_and_execute_holds_without_touching_the_broker(self):
+        """A hold is not an order of zero shares: the broker is never asked."""
+        from src.state_mapper import StateMapper
+        from src.trading_execution import AlpacaClient, TradingExecutor
+
+        mock_client = MagicMock(spec=AlpacaClient)
+        executor = TradingExecutor(alpaca_client=mock_client)
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=100.0, previous_price=100.0, cash=10000.0
+        )
+
+        assert executor.decide_and_execute(state) is None
+        mock_client.submit_order.assert_not_called()
+
+
