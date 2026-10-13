@@ -591,8 +591,21 @@ class TradingExecutor:
         current_shares: int = 0,
         portfolio_value: float | None = None,
         win_rate: float = 0.6,
-        win_loss_ratio: float = 2.0
+        win_loss_ratio: float = 2.0,
+        confidence: float | None = None
     ) -> dict[str, Any] | None:
+        """Size an action into an order, and tell the dashboard what was decided.
+
+        Args:
+            action: The action to translate; its movement is what the dashboard
+                reports.
+            confidence: The model's own confidence for this action, as :meth:`decide`
+                reported it. The dashboard shows a confidence next to a decision, so
+                the number it gets is the one the decision came from — a constant
+                would read as if it had been measured. A caller that hands over only
+                an action has not asked the model, and the reasoning says so rather
+                than naming a model that did not run.
+        """
         # Extract string representation of trade movement
         movement = self._movement_of(action)
 
@@ -600,7 +613,10 @@ class TradingExecutor:
             return None
 
         # Push to decision buffer
-        self._push_decision(symbol, movement, 0.75, ["Based on Bellman model"])
+        if confidence is None:
+            self._push_decision(symbol, movement, 0.5, ["Action translated without a model report"])
+        else:
+            self._push_decision(symbol, movement, confidence, ["Bellman model decided this action"])
 
         total_value = (
             portfolio_value
@@ -629,7 +645,8 @@ class TradingExecutor:
         current_shares: int = 0,
         portfolio_value: float | None = None,
         win_rate: float = 0.6,
-        win_loss_ratio: float = 2.0
+        win_loss_ratio: float = 2.0,
+        confidence: float | None = None
     ) -> OrderRecord | None:
         order_dict = self.translate_decision(
             action=action,
@@ -639,7 +656,8 @@ class TradingExecutor:
             current_shares=current_shares,
             portfolio_value=portfolio_value,
             win_rate=win_rate,
-            win_loss_ratio=win_loss_ratio
+            win_loss_ratio=win_loss_ratio,
+            confidence=confidence
         )
         if not order_dict:
             return None
@@ -702,7 +720,7 @@ class TradingExecutor:
             The order the broker returned, or ``None`` when the model held or the
             order did not survive sizing, validation or the risk manager.
         """
-        action, _report = self.decide(state, symbol)
+        action, report = self.decide(state, symbol)
         decided = symbol if symbol is not None else state.symbols[0]
         return self.execute_decision(
             action=action,
@@ -712,7 +730,8 @@ class TradingExecutor:
             current_shares=int(state.portfolio.holdings.get(decided, 0.0)),
             portfolio_value=state.portfolio_value(),
             win_rate=win_rate,
-            win_loss_ratio=win_loss_ratio
+            win_loss_ratio=win_loss_ratio,
+            confidence=report["confidence"],
         )
 
 

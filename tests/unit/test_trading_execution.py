@@ -741,4 +741,41 @@ class TestBellmanDecision:
         assert executor.decide_and_execute(state) is None
         mock_client.submit_order.assert_not_called()
 
+    def test_the_dashboard_is_told_the_confidence_that_made_the_decision(self):
+        """The confidence the dashboard prints is the one this decision produced."""
+        from src.state_mapper import StateMapper
+        from src.trading_execution import TradingExecutor
+
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        state = StateMapper().build_decision_state(
+            symbol="AAPL", price=100.0, previous_price=90.0, cash=10000.0
+        )
+        _, report = executor.decide(state)
+
+        with patch("src.trading_execution.decision_buffer") as buffer:
+            executor.translate_decision(
+                action=report["action"],
+                symbol="AAPL",
+                current_price=100.0,
+                portfolio_cash=10000.0,
+                confidence=report["confidence"],
+            )
+
+        pushed = buffer.add_decision.call_args_list[0].args[0]
+        assert pushed.confidence == report["confidence"]
+        assert pushed.reasoning == ["Bellman model decided this action"]
+
+    def test_an_action_without_a_report_is_not_blamed_on_the_model(self):
+        """Translating a bare action says that is all that happened."""
+        from src.domain import TradeMovement
+        from src.trading_execution import TradingExecutor
+
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        with patch("src.trading_execution.decision_buffer") as buffer:
+            executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 1000.0)
+
+        pushed = buffer.add_decision.call_args_list[0].args[0]
+        assert pushed.confidence == 0.5
+        assert pushed.reasoning == ["Action translated without a model report"]
+
 

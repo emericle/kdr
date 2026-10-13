@@ -562,6 +562,27 @@ class DatabaseManager:
         finally:
             self.connection.close(session)
 
+    def _write_weights(
+        self,
+        session,
+        symbol: str,
+        payload: str,
+        trained_at: datetime
+    ) -> None:
+        """Update the record this key already holds, or claim an empty slot."""
+        existing = session.query(ModelWeightsModel).filter_by(symbol=symbol).first()
+        if existing:
+            existing.weights_json = payload
+            existing.last_trained = trained_at
+        else:
+            session.add(
+                ModelWeightsModel(
+                    symbol=symbol,
+                    last_trained=trained_at,
+                    weights_json=payload,
+                )
+            )
+
     def save_model_weights(self, symbol: str, weights: dict, last_trained: datetime | None = None) -> bool:
         """Persist the weights a training pass produced, so the next process can load them.
 
@@ -581,19 +602,18 @@ class DatabaseManager:
         try:
             payload = json.dumps(weights)
             trained_at = last_trained if last_trained is not None else now_utc()
-            existing = session.query(ModelWeightsModel).filter_by(symbol=symbol).first()
-            if existing:
-                existing.weights_json = payload
-                existing.last_trained = trained_at
-            else:
-                session.add(
-                    ModelWeightsModel(
-                        symbol=symbol,
-                        last_trained=trained_at,
-                        weights_json=payload,
-                    )
-                )
-            session.commit()
+            try:
+                self._write_weights(session, symbol, payload, trained_at)
+                session.commit()
+            except IntegrityError:
+                # Two processes trained the same key at once and both read an
+                # empty slot, so both tried to claim it; the table's UNIQUE
+                # constraint on `symbol` is what makes one of them lose. Roll
+                # that attempt back and store against the record that won, so
+                # the last training pass is what the next process loads.
+                session.rollback()
+                self._write_weights(session, symbol, payload, trained_at)
+                session.commit()
             return True
         finally:
             self.connection.close(session)

@@ -162,6 +162,25 @@ def test_compute_recommendation_momentum():
     assert rec_flat["action"] == "HOLD"
 
 
+def test_fallback_reasoning_names_the_heuristic():
+    """The fallback says what it did, because the dashboard prints it as a reason.
+
+    A string claiming the Bellman model ran would be showing a confidence the
+    model never produced: this path is the one taken when no decision has been
+    recorded for the symbol yet.
+    """
+    market_buffer.add_tick("HONEST_UP", 100.0, 10)
+    market_buffer.add_tick("HONEST_UP", 105.0, 20)
+    rec = compute_recommendation("HONEST_UP")
+    assert not any("Bellman" in reason for reason in rec["reasoning"]), rec["reasoning"]
+    assert any("momentum" in reason.lower() for reason in rec["reasoning"])
+
+    market_buffer.add_tick("HONEST_DOWN", 100.0, 10)
+    market_buffer.add_tick("HONEST_DOWN", 95.0, 20)
+    rec_down = compute_recommendation("HONEST_DOWN")
+    assert not any("Bellman" in reason for reason in rec_down["reasoning"]), rec_down["reasoning"]
+
+
 def test_symbol_detail_with_db_data(live_server):
     """Verify that historical ticks from db are correctly merged with buffer ticks."""
     from unittest.mock import MagicMock
