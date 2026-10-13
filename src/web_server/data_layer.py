@@ -764,8 +764,13 @@ async def _query_historical_ticks_safe(
 
 
 def compute_recommendation(symbol: str) -> dict[str, Any]:
-    """
-    Returns latest decision or generates an algorithmic recommendation based on price action.
+    """Return the recorded decision for a symbol, or a momentum fallback.
+
+    The fallback is what runs when nothing has been decided yet: it reads the
+    price change the buffer last saw and compares it with a fixed band. Its
+    reasoning names that, because the dashboard prints these strings next to the
+    confidence it prints, and a string claiming the Bellman model ran would be
+    showing a number the model never produced.
     """
     latest = decision_buffer.get_latest_decision(symbol)
     if latest:
@@ -774,29 +779,31 @@ def compute_recommendation(symbol: str) -> dict[str, Any]:
     summary = market_buffer.get_summary(symbol)
     change = summary.get("changePercent", 0.0)
 
+    # The band is the whole rule: outside it the direction of the move is the
+    # recommendation, inside it nothing is recommended.
     if change > 0.15:
         action = "BUY"
         conf = min(0.95, 0.65 + abs(change) * 0.1)
         reasons = [
             f"Upward price momentum (+{change:.2f}%)",
-            "Bellman target Q-value above threshold",
-            "Positive trend trajectory detected"
+            "Momentum crossed the +0.15% buy threshold",
+            "No model decision recorded for this symbol yet"
         ]
     elif change < -0.15:
         action = "SELL"
         conf = min(0.95, 0.65 + abs(change) * 0.1)
         reasons = [
             f"Downward price pressure ({change:.2f}%)",
-            "Risk boundary triggered",
-            "Bellman expected return negative"
+            "Momentum crossed the -0.15% sell threshold",
+            "No model decision recorded for this symbol yet"
         ]
     else:
         action = "HOLD"
         conf = 0.70
         reasons = [
             "Price consolidating in neutral zone",
-            "Waiting for directional breakout signal",
-            "Portfolio allocation optimal"
+            "Momentum inside the +/-0.15% hold band",
+            "No model decision recorded for this symbol yet"
         ]
 
     return {

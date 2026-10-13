@@ -152,6 +152,30 @@ found them, so they were left open and are closed as one batch:
   tests keep the dashboard's uvicorn thread out of scope, so no thread outlives the
   test that started it.
 
+## Phase 2c — The dashboard's honesty (found while implementing Phase 2b)
+
+The live path now asks the model, which made three places where the dashboard
+said more than the system knew:
+
+- The confidence pushed with a sized order was a constant `0.75` next to a real
+  decision; it is now the confidence `decide` reported for that decision, and an
+  action translated without a report says that is all it has.
+- The fallback recommendation is momentum, but its reasoning strings named Bellman
+  thresholds and a negative expected return. The strings now name the band the
+  momentum was compared against.
+- Two processes training the same key both claimed an empty slot; the loser of that
+  race used to get an `IntegrityError` out of the pass. It rolls back and stores
+  against the record that won.
+
+## Phase 2d — One record per order (found while implementing Phase 2c)
+
+Fixing the confidence exposed that the decision record itself was counted wrong:
+`translate_decision` pushed before risk management had sized anything, and the
+sizing helpers pushed again, so one order appeared twice and a refused decision
+appeared at all. The push moved to the point where an order exists and has been
+accepted, and the sizing fraction that had been passed as a confidence is now
+stated in the reasoning as a fact about sizing.
+
 ## Verification
 
 Run after each phase, not just at the end:

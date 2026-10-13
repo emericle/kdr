@@ -23,6 +23,7 @@ import datetime
 import json
 import os
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import InvalidRequestError
@@ -130,6 +131,99 @@ def contract_model_weights_writer(db: DatabaseManager, symbol: str) -> None:
         raise AssertionError(f"a second write left {len(rows)} records for one key")
     if db.get_model_weights(symbol) != updated:
         raise AssertionError(f"the second write left {db.get_model_weights(symbol)!r}, expected {updated!r}")
+
+
+class _BlindQuery:
+    """A Query that reports no record for the key.
+
+    This is what a process sees when the other one committed between its check
+    and its insert: the check comes back empty, and the insert that follows loses
+    the table's UNIQUE constraint.
+    """
+
+    def filter_by(self, **columns):
+        return self
+
+    def first(self):
+        return None
+
+
+class _RaceSession:
+    """A session whose first existence check comes back empty.
+
+    The interleaving two processes reach is what is being arranged here; the
+    session it wraps is real, so the constraint that refuses the insert and the
+    rollback that recovers from it are the real ones.
+    """
+
+    def __init__(self, real):
+        self.real = real
+        self.blind = True
+
+    def query(self, model):
+        if self.blind:
+            self.blind = False
+            return _BlindQuery()
+        return self.real.query(model)
+
+    def add(self, record):
+        return self.real.add(record)
+
+    def commit(self):
+        return self.real.commit()
+
+    def rollback(self):
+        return self.real.rollback()
+
+    def close(self):
+        return self.real.close()
+
+
+def contract_save_model_weights_race(db: DatabaseManager, symbol: str) -> None:
+    """A losing insert is recovered, so a training pass does not crash.
+
+    Two processes training the same key both look for a record, both find
+    nothing, and both insert; the table's UNIQUE constraint on the key is what
+    makes one of them lose. What has to be true afterwards is one record for the
+    key holding the weights of the pass that lost the race, not an exception out
+    of the pass that was counting on the write.
+
+    The interleaving is what is arranged here; the constraint and the recovery
+    are the real ones. A session cannot be made stale by hand, so the first
+    existence check is handed back empty the way a process sees the key when the
+    other one committed between its check and its insert.
+    """
+    weights = {"weights": [0.5, -0.25], "bias": 0.75}
+
+    # The record the other process already committed.
+    winner = _session(db)
+    try:
+        winner.add(
+            ModelWeightsModel(
+                symbol=symbol,
+                weights_json=json.dumps({"weights": [], "bias": 0.0}),
+            )
+        )
+        winner.commit()
+    finally:
+        winner.close()
+
+    real_get_session = db.connection.get_session
+
+    def hand_over_one_race_session():
+        return _RaceSession(real_get_session())
+
+    with patch.object(db.connection, "get_session", side_effect=hand_over_one_race_session):
+        if not db.save_model_weights(symbol, weights):
+            raise AssertionError("save_model_weights reported no session to write to")
+
+    rows = _session(db).query(ModelWeightsModel).filter_by(symbol=symbol).all()
+    if len(rows) != 1:
+        raise AssertionError(f"the losing insert left {len(rows)} records for one key")
+    if db.get_model_weights(symbol) != weights:
+        raise AssertionError(
+            f"the losing insert left {db.get_model_weights(symbol)!r}, expected {weights!r}"
+        )
 
 
 def contract_query_api_rejects_unknown_column(db: DatabaseManager) -> None:
@@ -398,6 +492,9 @@ class TestSqliteContract(unittest.TestCase):
 
     def test_save_model_weights_writes_and_updates(self):
         contract_model_weights_writer(self.db, self.symbol)
+
+    def test_save_model_weights_recovers_a_losing_insert(self):
+        contract_save_model_weights_race(self.db, self.symbol)
 
     def test_query_api_rejects_unknown_column(self):
         contract_query_api_rejects_unknown_column(self.db)

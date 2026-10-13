@@ -505,9 +505,17 @@ class TradingExecutor:
         current_shares: int,
         total_value: float,
         win_rate: float,
-        win_loss_ratio: float
+        win_loss_ratio: float,
+        confidence: float | None = None
     ) -> dict[str, Any] | None:
-        """Size a BUY with Kelly, let the risk manager cut it down, and order what survives."""
+        """Size a BUY with Kelly, let the risk manager cut it down, and order what survives.
+
+        Args:
+            confidence: The model's confidence for this action, as :meth:`decide`
+                reported it. It is what the dashboard is told, and it is told only
+                once an order exists: a decision the risk manager refused is not one
+                the dashboard should show.
+        """
         target_dollars = PositionSizing.calculate_kelly(
             win_rate=win_rate,
             win_loss_ratio=win_loss_ratio,
@@ -532,18 +540,35 @@ class TradingExecutor:
         if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
             return None
 
-        self._push_decision(
-            symbol,
-            "BUY",
-            eval_res["adjusted_shares"] / proposed_shares * 0.8,
-            ["Bellman model recommends buy", "Current price within target range"]
+        # One record per order, after the risk manager approved it. The fraction of
+        # the proposed size that survived is a fact about sizing, so it goes in the
+        # reasoning; the confidence field is the model's belief about the action.
+        decided_by = (
+            "Bellman model decided this action"
+            if confidence is not None
+            else "Action translated without a model report"
         )
-        return {
+        order = {
             "symbol": symbol,
             "side": "buy",
             "quantity": eval_res["adjusted_shares"],
             "order_type": "market"
         }
+        # The record describes what will actually be submitted, so it is pushed
+        # only for an order that survived sizing and the validator: a decision the
+        # risk manager refused leaves nothing, and one order is one record rather
+        # than two.
+        if self.order_validator.validate_order(order):
+            self._push_decision(
+                symbol,
+                "BUY",
+                confidence if confidence is not None else 0.5,
+                [
+                    decided_by,
+                    f"Risk manager kept {eval_res['adjusted_shares']} of {proposed_shares} proposed shares",
+                ],
+            )
+        return order
 
     def _translate_sell(
         self,
@@ -551,9 +576,16 @@ class TradingExecutor:
         current_price: float,
         portfolio_cash: float,
         current_shares: int,
-        total_value: float
+        total_value: float,
+        confidence: float | None = None
     ) -> dict[str, Any] | None:
-        """Size a SELL against the position already held, then let the risk manager approve it."""
+        """Size a SELL against the position already held, then let the risk manager approve it.
+
+        Args:
+            confidence: The model's confidence for this action, as :meth:`decide`
+                reported it. See :meth:`_translate_buy` for when the dashboard is
+                told about it.
+        """
         if current_shares <= 0:
             return None
 
@@ -569,18 +601,30 @@ class TradingExecutor:
         if not eval_res["approved"] or eval_res["adjusted_shares"] <= 0:
             return None
 
-        self._push_decision(
-            symbol,
-            "SELL",
-            0.75,
-            ["Bellman model recommends sell", "Position target reached"]
+        # One record per order, after the risk manager approved it.
+        decided_by = (
+            "Bellman model decided this action"
+            if confidence is not None
+            else "Action translated without a model report"
         )
-        return {
+        order = {
             "symbol": symbol,
             "side": "sell",
             "quantity": eval_res["adjusted_shares"],
             "order_type": "market"
         }
+        # The record describes what will actually be submitted.
+        if self.order_validator.validate_order(order):
+            self._push_decision(
+                symbol,
+                "SELL",
+                confidence if confidence is not None else 0.5,
+                [
+                    decided_by,
+                    f"Risk manager kept {eval_res['adjusted_shares']} of {current_shares} held shares",
+                ],
+            )
+        return order
 
     def translate_decision(
         self,
@@ -591,16 +635,30 @@ class TradingExecutor:
         current_shares: int = 0,
         portfolio_value: float | None = None,
         win_rate: float = 0.6,
-        win_loss_ratio: float = 2.0
+        win_loss_ratio: float = 2.0,
+        confidence: float | None = None
     ) -> dict[str, Any] | None:
+        """Size an action into an order, and tell the dashboard about it once.
+
+        Args:
+            action: The action to translate; its movement is what the dashboard
+                reports.
+            confidence: The model's own confidence for this action, as :meth:`decide`
+                reported it. The dashboard shows a confidence next to a decision, so
+                the number it gets is the one the decision came from — a constant
+                would read as if it had been measured. A caller that hands over only
+                an action has not asked the model, and the reasoning says so rather
+                than naming a model that did not run.
+
+        The record is pushed by whichever sizing produced an order, and only for an
+        order the validator accepts, so a decision the risk manager refused leaves
+        nothing on the dashboard and one order is one record rather than two.
+        """
         # Extract string representation of trade movement
         movement = self._movement_of(action)
 
         if movement in ("HOLD", "NONE", None):
             return None
-
-        # Push to decision buffer
-        self._push_decision(symbol, movement, 0.75, ["Based on Bellman model"])
 
         total_value = (
             portfolio_value
@@ -610,12 +668,12 @@ class TradingExecutor:
 
         if movement == "BUY":
             return self._translate_buy(
-                symbol, current_price, portfolio_cash, current_shares, total_value, win_rate, win_loss_ratio
+                symbol, current_price, portfolio_cash, current_shares, total_value, win_rate, win_loss_ratio, confidence
             )
 
         if movement in ("SELL", "EXIT"):
             return self._translate_sell(
-                symbol, current_price, portfolio_cash, current_shares, total_value
+                symbol, current_price, portfolio_cash, current_shares, total_value, confidence
             )
 
         return None
@@ -629,7 +687,8 @@ class TradingExecutor:
         current_shares: int = 0,
         portfolio_value: float | None = None,
         win_rate: float = 0.6,
-        win_loss_ratio: float = 2.0
+        win_loss_ratio: float = 2.0,
+        confidence: float | None = None
     ) -> OrderRecord | None:
         order_dict = self.translate_decision(
             action=action,
@@ -639,7 +698,8 @@ class TradingExecutor:
             current_shares=current_shares,
             portfolio_value=portfolio_value,
             win_rate=win_rate,
-            win_loss_ratio=win_loss_ratio
+            win_loss_ratio=win_loss_ratio,
+            confidence=confidence
         )
         if not order_dict:
             return None
@@ -702,7 +762,7 @@ class TradingExecutor:
             The order the broker returned, or ``None`` when the model held or the
             order did not survive sizing, validation or the risk manager.
         """
-        action, _report = self.decide(state, symbol)
+        action, report = self.decide(state, symbol)
         decided = symbol if symbol is not None else state.symbols[0]
         return self.execute_decision(
             action=action,
@@ -712,7 +772,8 @@ class TradingExecutor:
             current_shares=int(state.portfolio.holdings.get(decided, 0.0)),
             portfolio_value=state.portfolio_value(),
             win_rate=win_rate,
-            win_loss_ratio=win_loss_ratio
+            win_loss_ratio=win_loss_ratio,
+            confidence=report["confidence"],
         )
 
 
