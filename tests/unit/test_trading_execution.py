@@ -763,7 +763,7 @@ class TestBellmanDecision:
 
         pushed = buffer.add_decision.call_args_list[0].args[0]
         assert pushed.confidence == report["confidence"]
-        assert pushed.reasoning == ["Bellman model decided this action"]
+        assert pushed.reasoning[0] == "Bellman model decided this action"
 
     def test_an_action_without_a_report_is_not_blamed_on_the_model(self):
         """Translating a bare action says that is all that happened."""
@@ -772,10 +772,56 @@ class TestBellmanDecision:
 
         executor = TradingExecutor(alpaca_client=MagicMock())
         with patch("src.trading_execution.decision_buffer") as buffer:
-            executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 1000.0)
+            order = executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 1000.0)
 
+        assert order is not None
+        assert len(buffer.add_decision.call_args_list) == 1
         pushed = buffer.add_decision.call_args_list[0].args[0]
         assert pushed.confidence == 0.5
-        assert pushed.reasoning == ["Action translated without a model report"]
+        assert pushed.reasoning[0] == "Action translated without a model report"
+
+    def test_a_refused_order_leaves_nothing_on_the_dashboard(self):
+        """A decision the risk manager refused is not one the dashboard shows."""
+        from src.domain import TradeMovement
+        from src.trading_execution import RiskManager, TradingExecutor
+
+        mock_rm = MagicMock(spec=RiskManager)
+        mock_rm.evaluate_order.return_value = {
+            "approved": False,
+            "adjusted_shares": 0,
+            "reason": "Denied",
+        }
+        executor = TradingExecutor(alpaca_client=MagicMock(), risk_manager=mock_rm)
+
+        with patch("src.trading_execution.decision_buffer") as buffer:
+            assert executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 1000.0, confidence=0.9) is None
+            buffer.add_decision.assert_not_called()
+
+    def test_one_order_is_one_record(self):
+        """Sizing no longer pushes a second record for the decision it sized."""
+        from src.domain import TradeMovement
+        from src.trading_execution import TradingExecutor
+
+        executor = TradingExecutor(alpaca_client=MagicMock())
+        with patch("src.trading_execution.decision_buffer") as buffer:
+            order = executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 10000.0, confidence=0.8)
+
+        assert order is not None
+        assert len(buffer.add_decision.call_args_list) == 1
+
+    def test_an_order_the_validator_refuses_leaves_no_record(self):
+        """The record describes what will be submitted, not what was decided."""
+        from src.domain import TradeMovement
+        from src.trading_execution import OrderValidator, TradingExecutor
+
+        mock_validator = MagicMock(spec=OrderValidator)
+        mock_validator.validate_order.return_value = False
+        executor = TradingExecutor(alpaca_client=MagicMock(), order_validator=mock_validator)
+
+        with patch("src.trading_execution.decision_buffer") as buffer:
+            order = executor.translate_decision(TradeMovement.BUY, "AAPL", 150.0, 10000.0, confidence=0.8)
+
+        assert order is not None
+        buffer.add_decision.assert_not_called()
 
 
