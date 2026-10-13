@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KDR Deployment Script for Raspberry Pi 4 (rpi4)
+# KDR Deployment Script for Raspberry Pi 4 (rpi4.local)
 # Deploys frontend to /var/www/html/kdr and backend service connecting to
 # PostgreSQL on pinky.local.
 # ==============================================================================
@@ -16,7 +16,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Configuration
-TARGET_HOST="${TARGET_HOST:-rpi4}"
+# The Pi advertises itself over mDNS as rpi4.local; the bare "rpi4" name is not
+# resolvable from this machine, so the default is the mDNS name. Override with
+# TARGET_HOST=... to deploy somewhere else.
+TARGET_HOST="${TARGET_HOST:-rpi4.local}"
 TARGET_USER="${TARGET_USER:-emericle}"
 WEB_ROOT="/var/www/html"
 FRONTEND_DIR="${WEB_ROOT}/kdr"
