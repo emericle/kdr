@@ -6,7 +6,9 @@ A Python 3.14-powered trading engine that leverages a **Bellman decision model**
 
 ## Features
 
-- **Bellman Decision Engine:** Computes optimal action values with reinforcement learning techniques and Gymnasium-compatible environments.
+- **Bellman Decision Engine:** Scores every candidate trade movement as immediate reward plus discounted future value (`r + γ·V(s')`) and acts on the argmax, so the discount factor shapes decisions; a value-function training loop fits `V` to those targets.
+- **Normalized State Vector:** Log price changes, sentiment rescaled onto [-1, 1], position flags and cash as a fraction of portfolio value, so one value function serves symbols priced from a cent to six figures; `KDR_STATE_VECTOR_SCHEMA=legacy` reproduces the old raw layout for comparison.
+- **Backtesting Harness:** Replays stored bars through the live decision path as a paper portfolio and reports the return, the mean reward and every decision (`BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest`).
 - **Risk Management:** Dynamic position sizing powered by the Kelly Criterion with a strict 20% portfolio capital allocation cap.
 - **Real-Time Data Ingestion:** Live streaming trade and bar WebSocket ingestion via Alpaca Markets.
 - **Sentiment Analysis:** Multi-source financial sentiment scoring via Adanos API.
@@ -80,9 +82,13 @@ Configure `.env` in the repository root:
 | `ALPACA_API_KEY` | Yes | Alpaca Markets API key identifier |
 | `ALPACA_SECRET_KEY` | Yes | Alpaca Markets secret API key |
 | `ALPACA_BASE_URL` | No | Alpaca API endpoint (defaults to paper trading: `https://paper-api.alpaca.markets`) |
-| `ADANOS_API_KEY` | Yes | Adanos sentiment analysis API key |
+| `ADANOS_API_KEY` | Yes | Adanos sentiment analysis API key. Read when the sentiment adapter is used rather than at import time; if it is missing, sentiment lookups are skipped and the pipeline continues with neutral sentiment. |
 | `DATABASE_URL` | Yes | PostgreSQL connection string (`postgresql://user:pass@localhost:5432/kdr_db`) |
 | `QA_DATABASE_URL` | No | Alternate database used when `SKIP_DB_TEST` is set or `USE_QA_DB` is true. Set it so test traffic cannot reach a live book. |
+| `KDR_STATE_VECTOR_SCHEMA` | No | `normalized` (default) or `legacy`. Chooses the state vector layout the model trains and decides on; `legacy` reproduces the pre-normalization features so a run under either flag can be compared. |
+| `BACKTEST_SYMBOLS` | No | Comma-separated symbols `python -m src.backtest` replays. Required for that command; ignored elsewhere. |
+| `BACKTEST_CASH` | No | Paper portfolio's starting cash for the backtest (default `100000`). |
+| `BACKTEST_MINUTES` | No | Window of stored bars the backtest replays, in minutes (default `1440`). |
 
 Nothing in the source carries a database address of its own. If neither `DATABASE_URL` nor the QA override resolves, `get_database_url` logs an error and returns an empty string, and connecting raises rather than silently writing somewhere else.
 
@@ -102,6 +108,20 @@ Every timestamp the system records is UTC. `src/times.py` is the single place th
 | `minute_key(value)` | `YYYY-MM-DD HH:MM` minute key for market data |
 
 Stored timestamps are UTC-aware `datetime` values, so PostgreSQL keeps the offset and comparisons stay correct across DST and timezones. Numeric epoch values keep their precision: a nanosecond timestamp is not silently truncated to seconds.
+
+### State vector
+
+`FullState.to_vector(symbols)` flattens a state to `3 * len(symbols) + 1` features, in the order the symbols are passed. By default every feature is scaled, so one value function can serve a symbol priced at a cent and one priced at sixty thousand:
+
+| Feature (per symbol) | Value |
+| :--- | :--- |
+| Price movement | `log(price / previous_price)`, or `0` when there is no previous price |
+| Sentiment | Score rescaled onto roughly [-1, 1] using `MarketState.sentiment_min`/`sentiment_max` (Adanos reports 0 to 1) |
+| Position | `1` when the symbol is held, `0` when flat |
+| Cash (final entry) | Cash as a fraction of the portfolio's total value (cash plus everything held) |
+
+Set `KDR_STATE_VECTOR_SCHEMA=legacy` to get the pre-normalization layout instead — raw price, raw holding, raw sentiment, then raw cash — which is the same length, so an old and a new run can be compared feature by feature. `state.legacy_vector(symbols)` and `state.normalized_vector(symbols)` return either layout on demand regardless of the flag. An unrecognized value raises at the first vectorization rather than silently picking one.
+
 
 ### Verification Utilities
 
@@ -136,6 +156,20 @@ python src/scraper.py --duration 60
 # Run a single batch pass
 python src/scraper.py --no-continuous
 ```
+
+### Backtesting
+
+Replay stored bars through the decision model as a paper portfolio. This is the spec's validation step: the harness drives the same state, action space and engine the live system uses, on data whose outcome is already known, and it never touches the broker.
+
+```bash
+# Replay the last 1440 minutes of stored bars for two symbols
+BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest
+
+# Wider window and a different starting portfolio
+BACKTEST_SYMBOLS=AAPL,TSLA BACKTEST_MINUTES=10080 BACKTEST_CASH=250000 python -m src.backtest
+```
+
+The command prints a one line summary (`steps decisions, start -> end (+/-return)`) and the full JSON report: decision count, starting and ending portfolio value, return, mean reward, and one entry per decision with the timestamp, symbol, movement, reward and portfolio value after the move. `src/backtest.py` also exposes `Backtester` and `_transition` for use in tests and notebooks.
 
 ### Background Service Management
 
@@ -221,6 +255,7 @@ construction fails. To exercise the skipped tests, start the app and point
 ├── src/                 # Core engine source code
 │   ├── domain.py        # Pydantic schemas (MarketState, PortfolioState, Action)
 │   ├── model.py         # Bellman decision engine and RL training
+│   ├── backtest.py      # Historical replay and paper-portfolio validation
 │   ├── trading_execution.py # Risk management, Kelly sizing, and Alpaca execution
 │   ├── scraper.py       # Alpaca WebSocket streaming, buffer, and batch DB writer
 │   ├── database.py      # SQLAlchemy persistence and schema migrations

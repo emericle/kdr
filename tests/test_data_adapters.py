@@ -249,10 +249,9 @@ class TestAlpacaDataAdapter:
 class TestAdanosDataAdapter:
     """Test AdanosDataAdapter functionality."""
 
-    def test_fetch_sentiment_with_api_key(self):
+    def test_fetch_sentiment_with_api_key(self, monkeypatch):
         """Should fetch sentiment when API key is present."""
-        # Note: This test relies on ADANOS_API_KEY environment variable
-        AdanosDataAdapter.ADANOS_API_KEY = "test_key"
+        monkeypatch.setenv("ADANOS_API_KEY", "test_key")
 
         result = AdanosDataAdapter.fetch_sentiment(['AAPL', 'TSLA'])
 
@@ -260,9 +259,9 @@ class TestAdanosDataAdapter:
         assert len(result) > 0
         assert all('symbol' in r for r in result)
 
-    def test_fetch_sentiment_without_api_key(self):
+    def test_fetch_sentiment_without_api_key(self, monkeypatch):
         """Should return empty list when API key is missing."""
-        AdanosDataAdapter.ADANOS_API_KEY = ""
+        monkeypatch.delenv("ADANOS_API_KEY", raising=False)
 
         result = AdanosDataAdapter.fetch_sentiment(['AAPL'])
 
