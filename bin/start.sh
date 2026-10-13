@@ -14,9 +14,17 @@ NC='\033[0m' # No Color
 
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+if [ -f "${SCRIPT_DIR}/../requirements.txt" ]; then
+    PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
+elif [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
+    PROJECT_ROOT="${SCRIPT_DIR}"
+else
+    PROJECT_ROOT="$(pwd)"
+fi
 
-PID_FILE="${SCRIPT_DIR}/kdr.pid"
+cd "$PROJECT_ROOT"
+
+PID_FILE="${PROJECT_ROOT}/kdr.pid"
 
 # Function to stop the service
 stop_kdr() {
@@ -59,7 +67,7 @@ if [ "$1" == "stop" ]; then
     exit 0
 fi
 
-echo "SCRIPT_DIR=${SCRIPT_DIR}"
+echo "PROJECT_ROOT=${PROJECT_ROOT}"
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║        KDR System Startup              ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
@@ -90,11 +98,11 @@ echo ""
 echo -e "${YELLOW}[2/4]${NC} Checking environment variables..."
 
 # Load .env file if present
-if [ -f "$SCRIPT_DIR/.env" ]; then
+if [ -f "$PROJECT_ROOT/.env" ]; then
     echo -e "${YELLOW}Loading environment from .env file...${NC}"
     set -a
     # Source .env without failing if comments/formatting exist
-    source "$SCRIPT_DIR/.env"
+    source "$PROJECT_ROOT/.env"
     set +a
 fi
 
@@ -160,7 +168,7 @@ echo -e "${YELLOW}[4/4]${NC} Starting KDR service in background..."
 mkdir -p logs
 
 # Create PID file for process management
-LOG_FILE="${SCRIPT_DIR}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="${PROJECT_ROOT}/logs/kdr_$(date +%Y%m%d_%H%M%S).log"
 
 # Parse arguments for the main process
 ARGS=()
@@ -203,7 +211,7 @@ if ps -p $PID > /dev/null; then
     echo -e "${GREEN}✓ Log file: $LOG_FILE${NC}"
     echo ""
     echo -e "${YELLOW}To check status, run: tail -f $LOG_FILE${NC}"
-    echo -e "${YELLOW}To stop the service, run: ./start.sh stop${NC}"
+    echo -e "${YELLOW}To stop the service, run: ./bin/start.sh stop${NC}"
 else
     echo -e "${RED}✗ Failed to start KDR service${NC}"
     echo -e "${RED}Check log file for details: $LOG_FILE${NC}"
