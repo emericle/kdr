@@ -1,23 +1,19 @@
 """Domain models for the trading state and the actions the agent can take."""
 from __future__ import annotations
-from enum import Enum
-from typing import Dict, List, Optional, Union
-
-from datetime import datetime, timezone
 
 import math
-
 import os
-
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from datetime import datetime
+from enum import StrEnum
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.times import to_utc
 
 # What a caller may hand to a timestamp field: epoch seconds, ISO text or a
 # datetime. :meth:`FullState.timestamp` normalizes all three to UTC-aware.
-TimestampInput = Optional[Union[datetime, float, int, str]]
+TimestampInput = datetime | float | int | str | None
 
 STATE_VECTOR_SCHEMA_ENV = "KDR_STATE_VECTOR_SCHEMA"
 DEFAULT_STATE_VECTOR_SCHEMA = "normalized"
@@ -42,7 +38,7 @@ def state_vector_schema() -> str:
     return raw
 
 
-class TradeMovement(str, Enum):
+class TradeMovement(StrEnum):
     """Discrete trade movements."""
     BUY = "BUY"
     SELL = "SELL"
@@ -57,9 +53,9 @@ class MarketState(BaseModel):
     measured data: they let :meth:`FullState.to_vector` put sentiment on the same
     footing as the other features.
     """
-    prices: Dict[str, float] = Field(default_factory=dict)
-    previous_prices: Dict[str, float] = Field(default_factory=dict)
-    sentiment_scores: Dict[str, float] = Field(default_factory=dict)
+    prices: dict[str, float] = Field(default_factory=dict)
+    previous_prices: dict[str, float] = Field(default_factory=dict)
+    sentiment_scores: dict[str, float] = Field(default_factory=dict)
     sentiment_min: float = 0.0
     sentiment_max: float = 1.0
 
@@ -86,7 +82,7 @@ class MarketState(BaseModel):
 
 class PortfolioState(BaseModel):
     """Current state of the investor's portfolio."""
-    holdings: Dict[str, float] = Field(default_factory=dict)
+    holdings: dict[str, float] = Field(default_factory=dict)
     cash: float = Field(..., ge=0.0)
 
     @field_validator("holdings")
@@ -98,7 +94,7 @@ class PortfolioState(BaseModel):
         return v
 
     @property
-    def symbol_quantities(self) -> Dict[str, float]:
+    def symbol_quantities(self) -> dict[str, float]:
         return self.holdings
 
 
@@ -106,7 +102,7 @@ class FullState(BaseModel):
     """The complete state perceived by the agent."""
     market: MarketState
     portfolio: PortfolioState
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
 
     @field_validator("timestamp", mode="before")
     @classmethod
@@ -117,7 +113,7 @@ class FullState(BaseModel):
         return to_utc(v)
 
     @property
-    def symbols(self) -> List[str]:
+    def symbols(self) -> list[str]:
         """Get all symbols in the state"""
         return list(self.market.prices.keys())
 
@@ -128,7 +124,7 @@ class FullState(BaseModel):
             value += quantity * self.market.prices.get(symbol, 0.0)
         return value
 
-    def to_vector(self, symbols: List[str], schema: Optional[str] = None) -> np.ndarray:
+    def to_vector(self, symbols: list[str], schema: str | None = None) -> np.ndarray:
         """
         Converts the state into a flattened numpy array for the neural network.
         Expects a fixed list of symbols to ensure consistent vector length.
@@ -164,9 +160,9 @@ class FullState(BaseModel):
             return self.normalized_vector(symbols)
         raise ValueError(f"Unknown state vector schema {chosen!r}")
 
-    def legacy_vector(self, symbols: List[str]) -> np.ndarray:
+    def legacy_vector(self, symbols: list[str]) -> np.ndarray:
         """The pre-normalization features: raw price, raw holding, raw sentiment, raw cash."""
-        vector: List[float] = []
+        vector: list[float] = []
         for symbol in symbols:
             vector.append(self.market.prices.get(symbol, 0.0))
             vector.append(self.portfolio.holdings.get(symbol, 0.0))
@@ -174,9 +170,9 @@ class FullState(BaseModel):
         vector.append(self.portfolio.cash)
         return np.array(vector, dtype=np.float32)
 
-    def normalized_vector(self, symbols: List[str]) -> np.ndarray:
+    def normalized_vector(self, symbols: list[str]) -> np.ndarray:
         """The scaled features described by :meth:`to_vector`."""
-        vector: List[float] = []
+        vector: list[float] = []
         for symbol in symbols:
             price = self.market.prices.get(symbol)
             previous = self.market.previous_prices.get(symbol)
@@ -202,11 +198,11 @@ class Action(BaseModel):
     Can be discrete or continuous.
     """
     # For continuous actions (e.g., target weight adjustments)
-    target_weights: Optional[Dict[str, float]] = None
-    
+    target_weights: dict[str, float] | None = None
+
     # For discrete actions (if used instead)
-    movement: Optional[TradeMovement] = None
-    symbol: Optional[str] = None
+    movement: TradeMovement | None = None
+    symbol: str | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

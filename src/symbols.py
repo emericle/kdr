@@ -5,20 +5,19 @@ This module provides a single place to define, add, or remove symbols tracked
 by the KDR trading application (both equity and crypto assets).
 """
 
-from typing import List, Optional, Set, Union
 
 # ============================================================================
 # Central Symbol Configuration
 # Add, remove, or modify default tracked symbols here.
 # ============================================================================
-DEFAULT_SYMBOLS: List[str] = [
+DEFAULT_SYMBOLS: list[str] = [
     "AAPL",
     "TSLA",
     "BTC",  # Bitcoin (gathered from Alpaca)
 ]
 
 # Set of recognized cryptocurrency symbols
-CRYPTO_SYMBOLS: Set[str] = {
+CRYPTO_SYMBOLS: set[str] = {
     "BTC",
     "BTC/USD",
     "BTCUSD",
@@ -60,18 +59,15 @@ def from_alpaca_symbol(symbol: str) -> str:
 
 
 def normalize_symbols(
-    symbols: Optional[Union[str, List[str]]] = None,
-    default: Optional[List[str]] = None
-) -> List[str]:
+    symbols: str | list[str] | None = None,
+    default: list[str] | None = None
+) -> list[str]:
     """
     Normalizes a list, comma-separated string, or None to a standard list of symbols.
     If symbols is None or empty, returns default (or ['AAPL', 'TSLA'] for backward compatibility).
     """
     if symbols is None or symbols == "" or symbols == []:
         return list(default if default is not None else ["AAPL", "TSLA"])
-    if isinstance(symbols, str):
-        raw_list = symbols.split(",")
-    else:
-        raw_list = symbols
+    raw_list = symbols.split(",") if isinstance(symbols, str) else symbols
     cleaned = [from_alpaca_symbol(s.strip().upper()) for s in raw_list if s and s.strip()]
     return cleaned or list(default if default is not None else ["AAPL", "TSLA"])

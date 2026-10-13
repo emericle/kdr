@@ -10,13 +10,14 @@ Verifies that a real WebSocket client connecting to /ws:
 import asyncio
 import json
 import time
+
 import pytest
 import requests
 import websockets
 
 from src.web_server import (
-    market_buffer,
     decision_buffer,
+    market_buffer,
     start_web_server_thread,
     stop_web_server,
 )
@@ -52,7 +53,7 @@ def clean_buffers():
     market_buffer._history.clear()
     market_buffer._open_prices.clear()
     decision_buffer._history.clear()
-    yield
+    return
 
 
 @pytest.mark.asyncio

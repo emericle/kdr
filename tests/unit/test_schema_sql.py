@@ -29,7 +29,7 @@ NAIVE_TIMESTAMP = "TIMESTAMP"
 
 CREATE_TABLE = re.compile(r"CREATE TABLE (\w+) \((.*?)\);", re.S)
 COLUMN_LINE = re.compile(r"(\w+)\s+(.+?)\s*,?\s*$")
-CREATE_INDEX = re.compile(r"CREATE INDEX (\w+) ON (\w+) \(([^)]*)\);")
+CREATE_INDEX = re.compile(r"CREATE (UNIQUE )?INDEX (\w+) ON (\w+) \(([^)]*)\);")
 
 
 def sql_body() -> str:
@@ -58,10 +58,19 @@ def parse_tables(text: str) -> dict:
 def parse_indexes(text: str) -> dict:
     """Return ``{table: {column, ...}}`` for every indexed column."""
     indexes: dict[str, set[str]] = {}
-    for _, table, columns in CREATE_INDEX.findall(text):
+    for _, _, table, columns in CREATE_INDEX.findall(text):
         for column in columns.split(","):
             indexes.setdefault(table, set()).add(column.strip())
     return indexes
+
+
+def parse_unique_indexes(text: str) -> dict:
+    """Return ``{table: (column, ...)}`` for every ``CREATE UNIQUE INDEX``."""
+    return {
+        table: tuple(column.strip() for column in columns.split(","))
+        for unique, _, table, columns in CREATE_INDEX.findall(text)
+        if unique
+    }
 
 
 class TestSchemaSqlMatchesModels:
@@ -138,6 +147,23 @@ class TestSchemaSqlMatchesModels:
         }
         assert parse_indexes(sql_body()) == indexed
 
+    def test_unique_indexes_match_models(self):
+        """A composite ``Index(..., unique=True)`` is a ``CREATE UNIQUE INDEX``.
+
+        ``market_data`` carries one on ``(symbol, timestamp)``, which is what
+        lets ``add_market_data`` skip a bar a stream reconnect handed back. A
+        composite index is not covered by the per-column check above, so the
+        uniqueness it buys would be missing from a hand-bootstrapped database.
+        """
+        expected = {
+            name: tuple(column.name for column in index.columns)
+            for name, table in Base.metadata.tables.items()
+            for index in table.indexes
+            if index.unique and len(index.columns) > 1
+        }
+        declared = parse_unique_indexes(sql_body())
+        assert declared == expected, (declared, expected)
+
 
 class TestSchemaSqlLoadable:
     """The file can actually be handed to psql."""
@@ -150,7 +176,8 @@ class TestSchemaSqlLoadable:
     def test_index_syntax_is_portable(self):
         """Indexes use ``ON table (column)``, not the ``TABLE x (y)`` form."""
         for line in sql_body().splitlines():
-            if line.lstrip().upper().startswith("CREATE INDEX"):
+            stripped = line.lstrip().upper()
+            if stripped.startswith("CREATE INDEX") or stripped.startswith("CREATE UNIQUE INDEX"):
                 assert " ON " in line, line
 
     def test_every_statement_is_terminated(self):

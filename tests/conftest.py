@@ -12,12 +12,12 @@ the database is declared unavailable once, so their documented fallback paths
 run fast and deterministically.
 """
 
+import asyncio
 import socket
 import time
-import pytest
-import asyncio
-
 from functools import lru_cache
+
+import pytest
 
 from src.database import get_database_url
 
@@ -110,10 +110,10 @@ def unavailable_database_is_explicit():
     if _db_available():
         return
     try:
-        import src.web_server
+        import src.web_server.data_layer
     except ImportError:  # the web server pulls in an optional dependency stack
         return
-    src.web_server.get_db_manager = lambda: None
+    src.web_server.data_layer.get_db_manager = lambda: None
 
 
 @pytest.fixture(scope="session")

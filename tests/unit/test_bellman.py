@@ -1,6 +1,7 @@
+
 from src.domain import Action, FullState, TradeMovement
 from src.model import BellmanEngine
-import numpy as np
+
 
 def test_bellman_engine_returns_action():
     # Setup
@@ -31,9 +32,9 @@ def test_bellman_target_calculation():
     engine = BellmanEngine(discount_factor=0.9)
     reward = 10.0
     next_max_q = 50.0
-    
+
     # target = reward + gamma * next_max_q
     # target = 10.0 + 0.9 * 50.0 = 10.0 + 45.0 = 55.0
     target = engine.compute_target_q(reward, next_max_q)
-    
+
     assert target == 55.0

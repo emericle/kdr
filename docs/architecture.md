@@ -23,6 +23,31 @@ All credentials and endpoints come from `.env` in the repository root; nothing i
 
 ---
 
+## Code quality
+
+`pyproject.toml` is committed, so a reviewer gets the same result CI does:
+
+```bash
+ruff check src/ tests/   # 0 findings; the config is in pyproject.toml
+mypy src/                # clean; plotly and the Alpaca client have no stubs
+```
+
+Two policies are enforced by that config rather than by review comments:
+
+- **No oversized functions.** ruff's `C` rules reject a function whose branching
+  is complex enough to need splitting, so the long paths in the pipeline
+  (`add_market_data`, `run_worker_threads`, `translate_decision`, the dashboard
+  summary) are decomposed into named helpers.
+- **No blind excepts.** A handler names the failure it is answering — `DB_FAILURES`
+  for "the database did not answer", `PAYLOAD_FAILURES` for a malformed wire
+  payload, `BROKER_FAILURES` for a failed round trip. The seven remaining broad
+  catches sit at thread and process boundaries (a worker thread's whole loop body,
+  the blocking stream loop, the dashboard's start/stop, one websocket connection,
+  one broadcast tick) where the alternative is to end the process; each carries a
+  comment saying so.
+
+---
+
 
 ## Core Components
 
@@ -49,17 +74,31 @@ The engine is handed two functions rather than a policy: `transition(action, sta
 `Backtester` replays stored bars from PostgreSQL through the same state, action space and engine the live system uses, as a paper portfolio that never touches the broker. `run()` returns the decision count, starting and ending portfolio value, return, mean reward and one entry per decision; `summarize()` renders the one line the CLI prints. Run it with `BACKTEST_SYMBOLS=AAPL,TSLA python -m src.backtest`, optionally setting `BACKTEST_CASH` and `BACKTEST_MINUTES`. `_transition` is the harness's reward model: the signed price change the action captured, with a BUY spending `position_weight` of cash and a SELL releasing the same fraction.
 
 ### 3. Data Pipeline & Adapters
-- **Alpaca Streaming (`src/scraper.py`)**:
+
+The pipeline is four modules, and `src/scraper.py` is only the command line that
+composes them, so `python src/scraper.py --debug` still works and `from src.scraper
+import AlpacaStreamProcessor` still resolves:
+
+- **Stream client (`src/stream_client.py`)**:
   - `AlpacaStreamProcessor`: Subscribes to live Alpaca WebSocket trade and bar feeds, with automated background flushing.
+- **Buffer (`src/data_buffer.py`)**:
   - `DataStreamBuffer`: Thread-safe, $O(1)$ running OHLCV state aggregation and fast minute key generation, avoiding per-tick string formatting and $O(5N)$ traversals.
+- **DB writer (`src/db_writer.py`)**:
   - `DBWriterWorker`: Background worker draining tick and bar queues in batches for single-transaction persistence.
+  - `run_worker_threads`: the thread orchestration the entry point calls.
+- **Logging (`src/logging_config.py`)**:
+  - The only module that builds handlers. `configure_logging` is called once, from an entrypoint's `main`, never at import, so importing a module cannot reconfigure global logging or open the log file. Logging goes to one rotating file, `logs/kdr.log`, capped at 10 MB with five backups, rather than a fresh file per run.
 - **State Mapper (`src/state_mapper.py`)**:
   - Single-pass transformations mapping incoming raw ticks and bars into structured `MarketState` and `FullState` objects.
 - **Sentiment & Data Adapters (`src/sentiment_adapter.py`, `src/data_adapters.py`)**:
   - `AdanosSentimentAdapter`: Queries Adanos API for sentiment scores and correlates sentiment with price action.
 - **Persistence (`src/database.py`)**:
   - `DatabaseManager`: SQLAlchemy DeclarativeBase models with connection pooling and batched inserts (`session.add_all`) for high-throughput persistence.
+  - `.env` is read by `load_environment()` on first use rather than at import, so importing the module for its models no longer picks up credentials as a side effect.
   - Timestamps are stored as UTC-aware values (`DateTime(timezone=True)`), so PostgreSQL keeps the offset and range queries stay correct across DST and timezones. On read, `DatabaseManager` normalizes whatever the row holds back to a UTC-aware `datetime` before comparing it with the caller's boundary.
+  - `(symbol, timestamp)` carries a unique index, so a bar a stream reconnect or a re-run hands back is skipped instead of stored twice: the batch is deduplicated in memory, checked against what is already stored with one query, and a batch that loses that check to a concurrent writer is retried one record at a time.
+  - Interval-start prices (`1h`, `24h`, `5d`, `30d`, `1y`, `ytd`) are read through `get_prices_at_interval_starts`, which shares one anchor read across every duration for a symbol and caches the result for the minute it was read in; the cache is dropped on every write, so the dashboard never serves a stale anchor.
+  - A failed database operation is caught as `DB_FAILURES` (`DBAPIError` plus `InvalidRequestError`), which names "the database did not answer" rather than swallowing any bug in this file.
 - **Time (`src/times.py`)**:
   - Single source of truth for every timestamp in the system. `now_utc`, `to_utc`, `parse_iso`, `epoch_seconds`, `from_epoch`, `epoch_minute`, `minute_key` and `hhmmss` are the only time primitives the other modules call; nothing in `src/` calls `datetime.now()` or `datetime.utcnow()`. The remaining `time.time()` calls measure elapsed durations (log rotation, stream timeouts, DB reconnect backoff), where the clock's offset is irrelevant.
   - `to_utc` buckets numeric epochs by magnitude (nanoseconds above `1e15`, milliseconds above `1e12`, seconds below), so Alpaca's millisecond and nanosecond feeds keep their precision instead of being truncated. A naive `datetime` is read as UTC; a value that is not a timestamp at all raises `TypeError`, which adapters turn into a `ValueError` naming the offending input.
@@ -72,8 +111,14 @@ The engine is handed two functions rather than a policy: `transition(action, sta
 - `AlpacaClient`: REST interface for order placement, account queries, and position retrieval with connection pooling (`requests.Session`).
 - `TradingExecutor`: Coordinates Bellman model decisions through `RiskManager` and submits validated orders to `AlpacaClient`.
 
-### 5. Web Server & Live Dashboard (`src/web_server.py`, `src/static/dashboard.html`)
-- **FastAPI Backend**: Serves REST endpoints (`/api/market-indexes`, `/api/symbols`, `/api/status`) and real-time WebSocket feeds (`/ws`).
+### 5. Web Server & Live Dashboard (`src/web_server/`, `src/static/dashboard.html`)
+
+The server is a package, so `python -m uvicorn src.web_server:app` and
+`from src.web_server import market_buffer` keep working against the split:
+
+- **Data layer (`src/web_server/data_layer.py`)**: the thread-safe tick and decision buffers, the persistent index store, and the lazy database handle the dashboard reads.
+- **API layer (`src/web_server/api_layer.py`)**: the FastAPI routes (`/api/market-indexes`, `/api/symbols`, `/api/status`) and the real-time WebSocket endpoint (`/ws`).
+- **Templates**: static assets in `src/static/` (`dashboard.html`, `test-websocket.html`).
 - **Persistent Index Cache**: Indexes (VIX, DJIA, SP500, NASDAQ, RUSSELL2000) persist to disk (`data/index_cache.json`) to prevent empty or $0.00 displays when markets are closed.
 - **Market-Session Aware Deltas**: Lookback calculations anchor to the latest open market session rather than wall-clock time, handling weekends and market closures cleanly.
 - **Frontend Dashboard**: Vue 3 + Chart.js interface with duration filtering (1h, 24h, 5d, 30d, 1y, YTD), dynamic color coding, and responsive charts.

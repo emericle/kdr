@@ -8,7 +8,7 @@ set -e
 # Configuration
 PYTHON_CMD="python3.14"
 SCRIPT_PATH="${SCRIPT_PATH:-$PWD}"
-LOG_FILE="$PWD/logs/system.log"
+LOG_FILE="$PWD/logs/kdr.log"
 PID_FILE="$PWD/logs/kdr.pid"
 DATA_DIR="$PWD/outputs"
 DB_DIR="$PWD/.kdr_db"
@@ -121,7 +121,9 @@ fi
 print_status "Starting KDR Trading System..."
 print_status "This will run the scraper in debug mode for local testing."
 
-NOHUP $PYTHON_CMD src/scraper.py --debug > "$LOG_FILE" 2>&1 &
+# src/scraper.py writes every record to the rotating logs/kdr.log itself, so a
+# second copy of the same stream is not kept here.
+NOHUP $PYTHON_CMD src/scraper.py --debug >/dev/null 2>&1 &
 KDR_PID=$!
 
 # Save the PID

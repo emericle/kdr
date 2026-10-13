@@ -1,11 +1,10 @@
 """State mapping logic for transforming raw data into domain state models."""
 import logging
-from typing import Dict, List, Optional, Tuple
 
-from src.domain import MarketState, PortfolioState, FullState
-from src.data_adapters import AlpacaDataAdapter
-from src.sentiment_adapter import AdanosDataAdapter
 from src.config_gatekeeper import validate_configs
+from src.data_adapters import AlpacaDataAdapter
+from src.domain import FullState, MarketState, PortfolioState
+from src.sentiment_adapter import AdanosDataAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +21,8 @@ class StateMapper:
 
     def __init__(
         self,
-        alpaca_adapter: Optional[AlpacaDataAdapter] = None,
-        adanos_adapter: Optional[AdanosDataAdapter] = None
+        alpaca_adapter: AlpacaDataAdapter | None = None,
+        adanos_adapter: AdanosDataAdapter | None = None
     ):
         """Initialize the state mapper with configured adapters.
 
@@ -45,7 +44,7 @@ class StateMapper:
     def map_bar_data_to_state(
         self,
         bar_data: dict
-    ) -> Tuple[MarketState, Optional[PortfolioState]]:
+    ) -> tuple[MarketState, PortfolioState | None]:
         """
         Map a single OHLC bar to market state.
 
@@ -69,7 +68,7 @@ class StateMapper:
 
     def map_multiple_bars_to_state(
         self,
-        bars: List[dict]
+        bars: list[dict]
     ) -> MarketState:
         """
         Map multiple bars into current market state in a single pass.
@@ -80,7 +79,7 @@ class StateMapper:
         Returns:
             MarketState with latest prices
         """
-        prices: Dict[str, float] = {}
+        prices: dict[str, float] = {}
         for bar in bars:
             parsed = self.alpaca_adapter.parse_bar_data(bar)
             if parsed and 'symbol' in parsed:
@@ -91,12 +90,12 @@ class StateMapper:
 
         return MarketState(
             prices=prices,
-            sentiment_scores={sym: 0.0 for sym in prices}
+            sentiment_scores=dict.fromkeys(prices, 0.0)
         )
 
     def map_tick_data_to_state(
         self,
-        ticks: List[dict]
+        ticks: list[dict]
     ) -> MarketState:
         """
         Map tick data to current market state in a single pass.
@@ -107,7 +106,7 @@ class StateMapper:
         Returns:
             MarketState with latest prices
         """
-        prices: Dict[str, float] = {}
+        prices: dict[str, float] = {}
         for tick in ticks:
             parsed = self.alpaca_adapter.parse_tick_data(tick)
             if parsed and 'symbol' in parsed:
@@ -118,12 +117,12 @@ class StateMapper:
 
         return MarketState(
             prices=prices,
-            sentiment_scores={sym: 0.0 for sym in prices}
+            sentiment_scores=dict.fromkeys(prices, 0.0)
         )
 
     def map_positions_to_portfolio_state(
         self,
-        positions: List[dict]
+        positions: list[dict]
     ) -> PortfolioState:
         """
         Map portfolio positions to portfolio state.
@@ -138,8 +137,8 @@ class StateMapper:
 
     def map_and_combine_with_sentiment(
         self,
-        market_ticks: List[dict],
-        sentiment_data: Optional[List[dict]] = None
+        market_ticks: list[dict],
+        sentiment_data: list[dict] | None = None
     ) -> MarketState:
         """
         Create market state enriched with sentiment.
@@ -182,29 +181,26 @@ class StateMapper:
 
         # Enrich with sentiment if requested and API key available
         sentiment_data = None
-        if include_sentiment:
-            if isinstance(ticks, list) and len(ticks) > 0 and 'symbol' in ticks[0]:
-                symbols = list(set(tick.get('symbol', '') for tick in ticks if isinstance(tick, dict)))
-                sentiment_data = self.adanos_adapter.fetch_sentiment(symbols)
-                # Parse and enrich
-                parsed_sentiment = self.adanos_adapter.parse_sentiment_response(sentiment_data)
-                sentiment_data = parsed_sentiment
+        if include_sentiment and isinstance(ticks, list) and len(ticks) > 0 and 'symbol' in ticks[0]:
+            symbols = list({tick.get('symbol', '') for tick in ticks if isinstance(tick, dict)})
+            sentiment_data = self.adanos_adapter.fetch_sentiment(symbols)
+            # Parse and enrich
+            parsed_sentiment = self.adanos_adapter.parse_sentiment_response(sentiment_data)
+            sentiment_data = parsed_sentiment
 
         # Create full state
-        full_state = self.adanos_adapter.create_full_state_with_sentiment(
+        return self.adanos_adapter.create_full_state_with_sentiment(
             market_ticks=ticks,
             positions=positions,
             sentiment_data=sentiment_data
         )
 
-        return full_state
-
     def create_full_state_for_symbol(
         self,
         symbol: str,
-        market_data: Dict[str, dict],
+        market_data: dict[str, dict],
         sentiment_score: float = 0.0,
-        portfolio_data: Optional[Dict[str, float]] = None
+        portfolio_data: dict[str, float] | None = None
     ) -> FullState:
         """
         Create a focused FullState for a single symbol.
@@ -277,9 +273,9 @@ class StateMapper:
     def sync_with_database(
         self,
         db_manager,
-        symbols: List[str],
+        symbols: list[str],
         recent_minutes: int = 5
-    ) -> List[dict]:
+    ) -> list[dict]:
         """
         Fetch recent market data from database and map to state.
 

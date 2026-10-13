@@ -1,11 +1,10 @@
 """Unit tests for state mapper."""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
-from src.state_mapper import StateMapper
-from src.data_adapters import AlpacaDataAdapter
-from src.sentiment_adapter import AdanosDataAdapter
+
 from src.domain import FullState
-import sys
+from src.state_mapper import StateMapper
 
 # --- Test StateMapper ---
 
@@ -178,7 +177,7 @@ class TestStateMapper:
     def test_aggregate_state_from_components(self, state_mapper):
         """Should aggregate market and portfolio states."""
         from src.domain import MarketState, PortfolioState
-    
+
         market_state = MarketState(
             prices={'AAPL': 150.0, 'MSFT': 300.0},
             sentiment_scores={'AAPL': 0.7}
@@ -187,11 +186,11 @@ class TestStateMapper:
             holdings={'AAPL': 100.0},
             cash=10000.0
         )
-    
+
         full_state = state_mapper.aggregate_state_from_components(
             market_state, portfolio_state
         )
-    
+
         assert full_state is not None
         assert isinstance(full_state, FullState)
         # Verify aggregated components
@@ -230,7 +229,15 @@ class TestStateMapper:
         now = datetime.datetime.now()
 
         # Bar data with close
-        bar_item = {"symbol": "AAPL", "close": 155.0, "timestamp": now, "open": 150.0, "high": 156.0, "low": 149.0, "volume": 100}
+        bar_item = {
+            "symbol": "AAPL",
+            "close": 155.0,
+            "timestamp": now,
+            "open": 150.0,
+            "high": 156.0,
+            "low": 149.0,
+            "volume": 100,
+        }
         res_bar = state_mapper.create_full_state_for_symbol("AAPL", {"AAPL": bar_item}, 0.5, {"AAPL": 10.0})
         assert res_bar.market.prices["AAPL"] == 155.0
 
@@ -244,6 +251,7 @@ class TestStateMapper:
             state_mapper.create_full_state_for_symbol("AAPL", {"AAPL": "not-valid"}, 0.5, {})
 
     def test_init_with_invalid_configs(self):
-        with patch('src.state_mapper.validate_configs', return_value=False):
-            with pytest.raises(RuntimeError, match="Required configuration is missing"):
-                StateMapper()
+        with patch('src.state_mapper.validate_configs', return_value=False), pytest.raises(
+            RuntimeError, match="Required configuration is missing"
+        ):
+            StateMapper()

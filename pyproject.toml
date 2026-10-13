@@ -1,0 +1,50 @@
+# Committed tool configuration: `ruff check src/ tests/` and `mypy src/` read
+# this file, so a reviewer gets the same result the repo's CI does.
+#
+# ruff is a development tool, not a runtime dependency, so it is not in
+# requirements.txt: install it with `python -m pip install ruff`.
+
+[tool.ruff]
+# 120, not the 88/100 defaults: the widest line the codebase actually needs is
+# a wrapped dict literal, and a narrower cap would force those literals one
+# item per line without saying anything about the code.
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors: long lines, comparison and spacing style
+    "F",   # unused imports and unused variables
+    "W",   # pycodestyle warnings: trailing whitespace, mixed indentation
+    "I",   # import order
+    "B",   # bugbear: mutable default arguments, shadowed builtins, lazy and/or chains
+    "SIM", # simplified boolean and comprehension forms
+    "UP",  # idioms for the Python version this repo targets
+    "C",   # complexity: functions long enough to need splitting
+    "RET", # a function that returns in some branches and falls through in others
+    "RUF100", # a noqa comment that no longer suppresses anything
+    "PT",  # pytest fixtures and assertions that never run
+]
+# Deliberate, not debt: the suite is `unittest.TestCase` classes collected by
+# pytest, so pytest's assertion and raise styles do not apply (PT009, PT027);
+# `pytest.raises(ValueError)` pins the type the adapter raises, and the message
+# is asserted where it matters (PT011); `scraper.py` and the test packages run a
+# sys.path shim before importing `src.*`, so those imports are not at the top by
+# choice (E402); the `sys.version_info < (3, 14)` guard is the application's
+# documented requirement (UP036); and the swallowed exceptions sit inside thread
+# loops whose body is the loop, where `context.suppress` would hide which
+# statement may fail (SIM105).
+ignore = ["E402", "PT009", "PT011", "PT027", "SIM105", "UP036"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.14"
+warn_unused_configs = true
+
+# plotly and the Alpaca client ship no type information, so mypy cannot see
+# through them; the runtime tests cover those calls.
+[[tool.mypy.overrides]]
+module = ["plotly.*", "alpaca_trade_api.*"]
+ignore_missing_imports = true

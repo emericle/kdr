@@ -1,20 +1,14 @@
 """Unit tests for interval-aware price change calculation."""
 
 import time
-import threading
-from unittest.mock import MagicMock, patch, AsyncMock
-import pytest
-import asyncio
+from unittest.mock import MagicMock, patch
 
-from src.web_server import (
-    MarketDataBuffer,
-    TradingDecision,
-    decision_buffer,
-    market_buffer,
-    start_web_server_thread,
-    stop_web_server
-)
+import pytest
+
 from src.database import DatabaseManager
+from src.web_server import (
+    market_buffer,
+)
 
 TEST_PORT = 8099
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
@@ -25,7 +19,7 @@ def market_buffer_reset():
     """Reset market buffer for each test."""
     market_buffer._history.clear()
     market_buffer._open_prices.clear()
-    yield
+    return
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +31,7 @@ def mock_db_manager():
     mock_db.get_price_at_timestamp = MagicMock(return_value=150.0)
     mock_db.get_latest_market_record = MagicMock(return_value=None)
     mock_db.get_model_weights = MagicMock(return_value=None)
-    with patch("src.web_server.get_db_manager", return_value=mock_db):
+    with patch("src.web_server.data_layer.get_db_manager", return_value=mock_db):
         yield mock_db
 
 
@@ -96,7 +90,7 @@ class TestIntervalAwarePriceChange:
     def test_get_price_and_change_fallback_to_buffer(self, market_buffer_reset, mock_db_manager):
         """Test fallback to buffer price change calculation if DB unavailable."""
         now = time.time()
-        with patch("src.web_server.get_db_manager", return_value=mock_db_manager):
+        with patch("src.web_server.data_layer.get_db_manager", return_value=mock_db_manager):
             market_buffer.add_tick("AAPL", 150.0, 100, timestamp=now - 3600)  # Old tick
             market_buffer.add_tick("AAPL", 160.0, 200, timestamp=now)  # Current
 

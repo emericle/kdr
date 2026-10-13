@@ -1,10 +1,10 @@
 """Data adapters for transforming external API responses into internal domain models."""
 import logging
-from typing import Any, List, Optional
 from datetime import datetime
+from typing import Any
 
+from src.domain import FullState, MarketState, PortfolioState, TimestampInput
 from src.times import to_utc
-from src.domain import MarketState, PortfolioState, FullState, TimestampInput
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class AlpacaDataAdapter:
             raise ValueError(f"Unsupported timestamp format: {raw_ts}") from exc
 
     @staticmethod
-    def parse_tick_data(tick_data: dict) -> Optional[dict]:
+    def parse_tick_data(tick_data: dict) -> dict | None:
         """
         Parse a raw tick from Alpaca API into a standardized format.
 
@@ -56,7 +56,7 @@ class AlpacaDataAdapter:
             return None
 
     @staticmethod
-    def parse_bar_data(bar_data: dict) -> Optional[dict]:
+    def parse_bar_data(bar_data: dict) -> dict | None:
         """
         Parse a OHLC bar from Alpaca API.
 
@@ -82,7 +82,7 @@ class AlpacaDataAdapter:
             return None
 
     @staticmethod
-    def create_market_state(ticks: List[dict]) -> MarketState:
+    def create_market_state(ticks: list[dict]) -> MarketState:
         """
         Aggregate tick data into a MarketState.
 
@@ -113,7 +113,7 @@ class AlpacaDataAdapter:
         )
 
     @staticmethod
-    def create_portfolio_state(positions: Optional[List[dict]] = None) -> PortfolioState:
+    def create_portfolio_state(positions: list[dict] | None = None) -> PortfolioState:
         """
         Build PortfolioState from Alpaca positions.
 
@@ -154,8 +154,8 @@ class AlpacaDataAdapter:
 
     @staticmethod
     def create_full_state(
-        ticks: Optional[List[dict]] = None,
-        positions: Optional[List[dict]] = None,
+        ticks: list[dict] | None = None,
+        positions: list[dict] | None = None,
         timestamp: TimestampInput = None
     ) -> FullState:
         """

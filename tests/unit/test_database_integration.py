@@ -27,13 +27,14 @@ import unittest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
-from typing import Optional
 
 from src.database import (
+    INTERVAL_DURATIONS,
     DatabaseManager,
     MarketDataModel,
     ModelWeightsModel,
     get_database_url,
+    now_utc,
 )
 
 SQLITE_URL = "sqlite:///:memory:"
@@ -65,7 +66,7 @@ def contract_model_weights_round_trip(db: DatabaseManager, symbol: str) -> None:
     session.add(
         ModelWeightsModel(
             symbol=symbol,
-            last_trained=datetime.datetime.now(datetime.timezone.utc),
+            last_trained=datetime.datetime.now(datetime.UTC),
             weights_json=json.dumps(weights),
         )
     )
@@ -86,7 +87,7 @@ def contract_model_weights_malformed_json(db: DatabaseManager, symbol: str) -> N
     session.add(
         ModelWeightsModel(
             symbol=symbol,
-            last_trained=datetime.datetime.now(datetime.timezone.utc),
+            last_trained=datetime.datetime.now(datetime.UTC),
             weights_json="invalid json {{",
         )
     )
@@ -142,7 +143,7 @@ def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
     bars: list[dict] = [
         {
             "symbol": symbol,
-            "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.timezone.utc),
+            "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.UTC),
             "open": 101.0,
             "high": 102.0,
             "low": 100.0,
@@ -151,7 +152,7 @@ def contract_market_data_batch(db: DatabaseManager, symbol: str) -> None:
         },
         {
             "symbol": symbol,
-            "timestamp": datetime.datetime(2026, 10, 9, 14, 0, tzinfo=datetime.timezone.utc),
+            "timestamp": datetime.datetime(2026, 10, 9, 14, 0, tzinfo=datetime.UTC),
             "open": 102.0,
             "high": 103.0,
             "low": 101.0,
@@ -209,6 +210,127 @@ def contract_extra_columns_are_dropped(db: DatabaseManager, symbol: str) -> None
         )
 
 
+def contract_duplicate_bars_are_skipped(db: DatabaseManager, symbol: str) -> None:
+    """A bar handed over twice is stored once, in batch and across batches.
+
+    A stream reconnect or a re-run of the ingestion pipeline hands the same
+    minute bar back, and ``add_market_data`` now checks what it is holding
+    against what is already stored with one query per batch. Storing the bar
+    twice would pollute every delta and volume total downstream.
+    """
+    bar = {
+        "symbol": symbol,
+        "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.UTC),
+        "open": 101.0,
+        "high": 102.0,
+        "low": 100.0,
+        "close": 101.5,
+        "volume": 10.0,
+    }
+    db.add_market_data([bar])
+    # The same bar twice inside one batch, then again in a later batch.
+    db.add_market_data([dict(bar), dict(bar)])
+    db.add_market_data([dict(bar)])
+    rows = db.get_historical_market_data(symbol)
+    if len(rows) != 1:
+        raise AssertionError(
+            f"duplicate bars stored more than once: got {len(rows)} rows, expected 1"
+        )
+
+
+def _interval_bars(symbol: str) -> list[dict]:
+    """Bars spread across every dashboard duration's window, relative to now.
+
+    ``open`` encodes how far back the bar sits, so an interval read that lands
+    on the wrong bar is visible in the number it returns.
+    """
+    now = now_utc()
+    return [
+        {
+            "symbol": symbol,
+            "timestamp": now - datetime.timedelta(hours=hours),
+            "open": float(100 + hours),
+            "high": float(101 + hours),
+            "low": float(99 + hours),
+            "close": float(100.5 + hours),
+            "volume": 1000.0,
+        }
+        for hours in (0, 2, 6, 25, 40, 24 * 31, 24 * 400)
+    ]
+
+
+def contract_interval_batching_matches_single_lookups(
+    db: DatabaseManager, symbol: str
+) -> None:
+    """Reading every duration in one call returns what per-duration reads return.
+
+    The dashboard used to ask for each duration separately, which paid its own
+    anchor read every time. ``get_prices_at_interval_starts`` shares one anchor
+    read across them, and this is the contract that batching must not change
+    which bar a duration lands on.
+    """
+    db.add_market_data(_interval_bars(symbol))
+    batched = db.get_prices_at_interval_starts(symbol)
+    if set(batched) != set(INTERVAL_DURATIONS):
+        raise AssertionError(
+            f"batched read returned durations {sorted(batched)}, "
+            f"expected {sorted(INTERVAL_DURATIONS)}"
+        )
+
+    seeded = {float(bar["open"]) for bar in _interval_bars(symbol)}
+    # A write that stores nothing still clears the interval cache, so the
+    # single-duration lookups below recompute from the database rather than
+    # reusing whatever the batched call just cached.
+    db.add_market_data(_interval_bars(symbol)[:1])
+    for duration in INTERVAL_DURATIONS:
+        value = batched[duration]
+        if value is None or value not in seeded:
+            raise AssertionError(f"{duration} read {value!r}, not one of the seeded bars")
+        single = db.get_price_at_interval_start(symbol, duration)
+        if single != value:
+            raise AssertionError(
+                f"{duration}: batched read {value}, single-duration read {single}"
+            )
+
+    # A wider window can only reach an older bar, and older bars sit lower in
+    # this seeding, so the values must not decrease as the duration grows.
+    windows = ["1h", "24h", "5d", "30d", "1y"]
+    ordered = [batched[duration] for duration in windows]
+    if ordered != sorted(ordered):
+        raise AssertionError(f"wider windows read newer bars: {ordered}")
+
+
+def contract_writes_invalidate_interval_cache(db: DatabaseManager, symbol: str) -> None:
+    """A bar stored between two interval reads is visible to the second one.
+
+    Interval-start prices are cached for the minute they were read in, which is
+    only sound if a write drops them: the dashboard would otherwise keep showing
+    yesterday's anchor for the rest of the minute.
+    """
+    db.add_market_data(_interval_bars(symbol))
+    before = db.get_prices_at_interval_starts(symbol, ["24h"])["24h"]
+    if before is None:
+        raise AssertionError("no 24h start price for seeded bars")
+
+    # A bar just inside the 24h window becomes the oldest bar in it.
+    new_bar = {
+        "symbol": symbol,
+        "timestamp": now_utc() - datetime.timedelta(hours=23),
+        "open": 999.0,
+        "high": 1000.0,
+        "low": 998.0,
+        "close": 999.5,
+        "volume": 1000.0,
+    }
+    db.add_market_data([new_bar])
+    after = db.get_prices_at_interval_starts(symbol, ["24h"])["24h"]
+    if after != 999.0:
+        raise AssertionError(
+            f"24h start price still {after} after storing a 23h bar; "
+            "the interval cache was not invalidated on write"
+        )
+
+
 # Opt in with USE_QA_DB / SKIP_DB_TEST, the same switches get_database_url reads.
 # The connection attempt only happens once opted in, so importing this module
 # never reaches out to a network.
@@ -259,6 +381,15 @@ class TestSqliteContract(unittest.TestCase):
     def test_extra_columns_are_dropped(self):
         contract_extra_columns_are_dropped(self.db, self.symbol)
 
+    def test_duplicate_bars_are_skipped(self):
+        contract_duplicate_bars_are_skipped(self.db, self.symbol)
+
+    def test_interval_batching_matches_single_lookups(self):
+        contract_interval_batching_matches_single_lookups(self.db, self.symbol)
+
+    def test_writes_invalidate_interval_cache(self):
+        contract_writes_invalidate_interval_cache(self.db, self.symbol)
+
 
 class TestQaDatabaseContract(unittest.TestCase):
     """The same contract against the real postgres QA database."""
@@ -274,6 +405,11 @@ class TestQaDatabaseContract(unittest.TestCase):
             contract_model_weights_unknown_symbol(db)
             contract_query_api_rejects_unknown_column(db)
             contract_market_data_batch(db, SENTINEL_SYMBOL)
+            # Each market-data contract counts its own rows, so each gets a
+            # symbol of its own inside the sentinel namespace cleanup wipes.
+            contract_duplicate_bars_are_skipped(db, SENTINEL_SYMBOL + "DUP")
+            contract_interval_batching_matches_single_lookups(db, SENTINEL_SYMBOL + "INT")
+            contract_writes_invalidate_interval_cache(db, SENTINEL_SYMBOL + "CACHE")
         finally:
             self._cleanup(db)
 
@@ -282,10 +418,10 @@ class TestQaDatabaseContract(unittest.TestCase):
         session = _session(db)
         try:
             session.query(ModelWeightsModel).filter(
-                ModelWeightsModel.symbol == SENTINEL_SYMBOL
+                ModelWeightsModel.symbol.like(f"{SENTINEL_SYMBOL}%")
             ).delete()
             session.query(MarketDataModel).filter(
-                MarketDataModel.symbol == SENTINEL_SYMBOL
+                MarketDataModel.symbol.like(f"{SENTINEL_SYMBOL}%")
             ).delete()
             session.commit()
         finally:

@@ -1,19 +1,20 @@
 """Unit tests for the real-time web server module."""
 
+import asyncio
 import os
 import time
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 import requests
-import asyncio
 
 from src.web_server import (
-    market_buffer,
-    decision_buffer,
+    TradingDecision,
     compute_recommendation,
+    decision_buffer,
+    market_buffer,
     start_web_server_thread,
     stop_web_server,
-    TradingDecision
 )
 
 TEST_PORT = 8099
@@ -48,7 +49,7 @@ def clean_buffers():
     market_buffer._history.clear()
     market_buffer._open_prices.clear()
     decision_buffer._history.clear()
-    yield
+    return
 
 
 def test_dashboard_html_endpoint(live_server):
@@ -164,7 +165,8 @@ def test_compute_recommendation_momentum():
 def test_symbol_detail_with_db_data(live_server):
     """Verify that historical ticks from db are correctly merged with buffer ticks."""
     from unittest.mock import MagicMock
-    import src.web_server as ws_module
+
+    import src.web_server.data_layer as ws_module
 
     mock_db = MagicMock()
     now_ts = time.time()
@@ -193,7 +195,7 @@ def test_symbol_detail_with_db_data(live_server):
 
 def test_symbol_detail_fallback_seed_tick(live_server):
     """Verify fallback seed tick is provided if buffer has summary price but no ticks in time range."""
-    import src.web_server as ws_module
+    import src.web_server.data_layer as ws_module
 
     # Mock DB returning empty
     mock_db = MagicMock()
@@ -221,10 +223,10 @@ def test_symbol_detail_fallback_seed_tick(live_server):
 
 def test_db_circuit_breaker_behavior(live_server):
     """Verify circuit breaker trips on exception and skips subsequent calls during cooldown."""
-    import src.web_server as ws_module
+    import src.web_server.data_layer as ws_module
 
     mock_db = MagicMock()
-    mock_db.get_historical_market_data.side_effect = Exception("DB Connection refused")
+    mock_db.get_historical_market_data.side_effect = ConnectionError("DB Connection refused")
 
     original_db = ws_module._db_manager_instance
     original_avail = ws_module._db_is_available
@@ -283,6 +285,7 @@ class TestConnectionManager:
     def test_connect_adds_connection(self):
         """Verify connect method adds WebSocket to active connections."""
         from unittest.mock import AsyncMock
+
         from src.web_server import ConnectionManager
         manager = ConnectionManager()
 
@@ -295,6 +298,7 @@ class TestConnectionManager:
     def test_disconnect_removes_connection(self):
         """Verify disconnect method removes WebSocket from active connections."""
         from unittest.mock import AsyncMock
+
         from src.web_server import ConnectionManager
         manager = ConnectionManager()
 
@@ -318,20 +322,21 @@ class TestConnectionManager:
         assert len(manager.active_connections) == 0
 
     def test_broadcast_json_handles_dead_clients(self):
-        """Verify broadcast_json removes dead clients after exception."""
-        from unittest.mock import AsyncMock
-        import asyncio
+        """Verify broadcast_json removes a client whose send fails and keeps the rest."""
+        from fastapi import WebSocketDisconnect
+
         from src.web_server import ConnectionManager
         manager = ConnectionManager()
 
-        # Mock ws that raises exception on send_json
+        # A dead client raises what starlette raises once the transport is gone:
+        # the narrowed catch in broadcast_json is what has to name it.
         def raise_on_send_json(ws):
-            raise Exception("Connection closed")
+            raise WebSocketDisconnect("Connection closed")
 
         mock_ws1 = AsyncMock()
         mock_ws2 = AsyncMock()
 
-        # Manually set up mocks to simulate dead clients
+        # One dead client and one that answers normally
         mock_ws1.send_json = raise_on_send_json
         mock_ws2.send_json = AsyncMock()  # This one stays alive
 
@@ -375,21 +380,21 @@ class TestBroadcastLoop:
 
     @pytest.mark.asyncio
     async def test_broadcast_loop_handles_exception_gracefully(self):
-        """Verify broadcast_json handles exceptions without crashing."""
+        """Verify broadcast_json drops a client whose send fails, without crashing."""
+        from fastapi import WebSocketDisconnect
+
         from src.web_server import ConnectionManager
 
         manager = ConnectionManager()
         mock_ws = AsyncMock()
-        mock_ws.send_json = AsyncMock(side_effect=Exception("Send failed"))
+        mock_ws.send_json = AsyncMock(side_effect=WebSocketDisconnect("Send failed"))
 
         manager.active_connections.add(mock_ws)
 
-        # Should not raise exception, just log
         await manager.broadcast_json({"type": "test"})
 
-        # Exception should have been caught and dead client removed
-        # The mock should have been called
         assert mock_ws.send_json.called
+        assert mock_ws not in manager.active_connections
 
 
 class TestComputeRecommendationEdgeCases:
@@ -397,7 +402,6 @@ class TestComputeRecommendationEdgeCases:
 
     def test_compute_recommendation_new_symbol(self):
         """Verify compute_recommendation handles new symbols correctly."""
-        from datetime import datetime
 
         # Add tick but no decision yet
         market_buffer.add_tick("NEWSYM", 100.0, 10)
@@ -461,41 +465,45 @@ class TestHistoricalQuery:
 
     @pytest.mark.asyncio
     async def test_query_historical_ticks_timeout(self):
-        """Verify _query_historical_ticks_safe handles slow queries gracefully."""
-        # This test is complex to mock properly due to asyncio
-        # Skipping for now due to complexity of mocking asyncio.wait_for
-        pytest.skip("Skipped due to complex asyncio mocking requirements")
+        """A query over the one second budget is dropped and trips the breaker."""
+        import time
+
+        import src.web_server.data_layer as data_layer
+
+        slow_db = MagicMock()
+
+        def slow_query(**_kwargs):
+            time.sleep(1.2)
+            return []
+
+        slow_db.get_historical_market_data.side_effect = slow_query
+        results = await data_layer._query_historical_ticks_safe(slow_db, "SLOWSYM", None, 100)
+        assert results == []
+        assert not data_layer._db_is_available
 
     @pytest.mark.asyncio
     async def test_query_historical_ticks_db_failure(self):
         """Verify _query_historical_ticks_safe handles DB failures gracefully."""
-        from unittest.mock import MagicMock
-        from src.web_server import (
-            _query_historical_ticks_safe,
-            _db_manager_instance,
-            _db_is_available
-        )
-        import asyncio
+        import src.web_server.data_layer as data_layer
 
         mock_db = MagicMock()
-        mock_db.get_historical_market_data = MagicMock(return_value=[])
+        mock_db.get_historical_market_data.side_effect = ConnectionError("DB Connection refused")
 
-        original_db = _db_manager_instance
-        original_avail = _db_is_available
-
+        original_db = data_layer._db_manager_instance
+        original_avail = data_layer._db_is_available
         try:
-            _db_manager_instance = mock_db
-            _db_is_available = True
+            data_layer._db_manager_instance = mock_db
+            data_layer._db_is_available = True
 
-            results = await _query_historical_ticks_safe(
-                mock_db, "TESTSYM", None, 100
-            )
+            results = await data_layer._query_historical_ticks_safe(mock_db, "TESTSYM", None, 100)
 
-            # Should return empty list on success
+            # Should return empty list on failure, and say so on the breaker
             assert results == []
+            assert not data_layer._db_is_available
+            assert mock_db.get_historical_market_data.call_count == 1
         finally:
-            _db_manager_instance = original_db
-            _db_is_available = original_avail
+            data_layer._db_manager_instance = original_db
+            data_layer._db_is_available = original_avail
 
 
 class TestLifespan:
@@ -612,8 +620,8 @@ class TestMarketIndexTracking:
     @pytest.mark.asyncio
     async def test_get_market_index_no_historical_db_lookup(self):
         """Verify that get_market_index and get_all_market_indexes do not perform historical DB lookups."""
-        from src.web_server import get_market_index, get_all_market_indexes
-        with patch("src.web_server.get_db_manager") as mock_get_db:
+        from src.web_server import get_all_market_indexes, get_market_index
+        with patch("src.web_server.data_layer.get_db_manager") as mock_get_db:
             mock_db = MagicMock()
             mock_get_db.return_value = mock_db
 
@@ -634,7 +642,7 @@ class TestMarketIndexTracking:
     @pytest.mark.asyncio
     async def test_index_valuations_never_zero_when_closed(self):
         """Verify that all tracked indexes have non-zero valuations even if markets closed/no ticks."""
-        from src.web_server import get_all_market_indexes, TRACKED_INDEXES
+        from src.web_server import TRACKED_INDEXES, get_all_market_indexes
         indexes = await get_all_market_indexes()
         assert len(indexes) == len(TRACKED_INDEXES)
         for idx in indexes:

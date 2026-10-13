@@ -1,5 +1,5 @@
 """Tests for the UTC time helpers in ``src/times.py``."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from src.times import epoch_minute, epoch_seconds, hhmmss, minute_key, now_utc, parse_iso, to_utc
 
@@ -22,7 +22,7 @@ def test_naive_datetime_is_read_as_utc():
 
 def test_aware_datetime_is_converted_not_relabelled():
     new_york = datetime(2026, 10, 11, 11, 30, tzinfo=timezone(timedelta(hours=-4)))
-    assert to_utc(new_york) == datetime(2026, 10, 11, 15, 30, tzinfo=timezone.utc)
+    assert to_utc(new_york) == datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
 
 
 def test_epoch_seconds_round_trip():
@@ -43,9 +43,9 @@ def test_epoch_nanoseconds_are_detected_by_magnitude():
 
 
 def test_iso_text_is_parsed():
-    assert to_utc("2026-10-11T15:30:00Z") == datetime(2026, 10, 11, 15, 30, tzinfo=timezone.utc)
-    assert to_utc("2026-10-11 15:30:00") == datetime(2026, 10, 11, 15, 30, tzinfo=timezone.utc)
-    assert parse_iso("2026-10-11T15:30:00+02:00") == datetime(2026, 10, 11, 13, 30, tzinfo=timezone.utc)
+    assert to_utc("2026-10-11T15:30:00Z") == datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
+    assert to_utc("2026-10-11 15:30:00") == datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
+    assert parse_iso("2026-10-11T15:30:00+02:00") == datetime(2026, 10, 11, 13, 30, tzinfo=UTC)
 
 
 def test_malformed_text_raises_value_error():
@@ -73,7 +73,7 @@ def test_epoch_minute_collapses_representations_of_one_minute():
         EPOCH_SECONDS,
         EPOCH_SECONDS * 1_000,
         EPOCH_SECONDS * 1_000_000_000,
-        datetime(2025, 11, 11, 7, 30, 30, tzinfo=timezone.utc),
+        datetime(2025, 11, 11, 7, 30, 30, tzinfo=UTC),
     ):
         assert epoch_minute(shape) == int(EPOCH_SECONDS) // 60
 
@@ -87,7 +87,7 @@ def test_hhmmss_accepts_every_stored_shape():
     """The market buffer stores epoch seconds, so ``hhmmss`` must take a float."""
     assert hhmmss(EPOCH_SECONDS) == "07:30:00"
     assert hhmmss(EPOCH_SECONDS * 1e9) == "07:30:00"
-    assert hhmmss(datetime(2025, 11, 11, 7, 30, tzinfo=timezone.utc)) == "07:30:00"
+    assert hhmmss(datetime(2025, 11, 11, 7, 30, tzinfo=UTC)) == "07:30:00"
 
 
 def test_helpers_agree_with_the_clock():
@@ -106,6 +106,7 @@ def test_only_now_utc_reads_the_clock():
     """Every other helper is a pure conversion, so tests of them are stable."""
     import ast
     import inspect
+
     import src.times
 
     tree = ast.parse(inspect.getsource(src.times))
@@ -125,6 +126,6 @@ def test_only_now_utc_reads_the_clock():
 
 
 def test_epoch_seconds_of_a_stored_datetime_is_stable():
-    value = datetime(2026, 10, 11, 15, 30, tzinfo=timezone.utc)
+    value = datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
     assert epoch_seconds(value) == 1791732600.0
     assert to_utc(epoch_seconds(value)) == value

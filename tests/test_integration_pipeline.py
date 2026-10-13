@@ -19,7 +19,7 @@ import numpy as np
 
 from src.domain import FullState, MarketState, PortfolioState, TradeMovement
 from src.model import BellmanEngine
-from src.reporting import CSVReporter, ChartGenerator, PerformanceAnalyzer
+from src.reporting import ChartGenerator, CSVReporter, PerformanceAnalyzer
 from src.scraper import AlpacaStreamProcessor, DBWriterWorker
 from src.trading_execution import (
     AlpacaClient,

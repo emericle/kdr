@@ -7,7 +7,7 @@ set -e
 
 # Configuration
 PID_FILE="$PWD/logs/kdr.pid"
-LOG_FILE="$PWD/logs/system.log"
+LOG_FILE="$PWD/logs/kdr.log"
 
 # Colors for output
 GREEN='\033[0;32m'

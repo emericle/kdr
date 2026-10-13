@@ -1,7 +1,7 @@
 """The Bellman engine must choose an action, not just score one."""
 import pytest
 
-from src.domain import FullState, MarketState, PortfolioState, Action, candidate_actions
+from src.domain import FullState, MarketState, PortfolioState, candidate_actions
 from src.model import BellmanEngine
 
 
@@ -10,7 +10,7 @@ def _state(prices, previous, cash=1000.0):
         market=MarketState(
             prices=prices,
             previous_prices=previous,
-            sentiment_scores={s: 0.5 for s in prices},
+            sentiment_scores=dict.fromkeys(prices, 0.5),
         ),
         portfolio=PortfolioState(cash=cash, holdings={}),
     )

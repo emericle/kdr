@@ -21,6 +21,10 @@ CREATE TABLE market_data (
 );
 CREATE INDEX idx_symbol ON market_data (symbol);
 CREATE INDEX idx_timestamp ON market_data (timestamp);
+-- One bar per (symbol, timestamp): a stream reconnect or a re-run hands the
+-- same minute bar back, and `add_market_data` skips the duplicate rather than
+-- writing it twice.
+CREATE UNIQUE INDEX market_data_bar_unique ON market_data (symbol, timestamp);
 
 CREATE TABLE sentiment_data (
     id INTEGER PRIMARY KEY,

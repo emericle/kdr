@@ -1,3 +1,4 @@
+import importlib
 import sys
 from pathlib import Path
 
@@ -14,11 +15,12 @@ if src_dir.exists():
     sys.path.insert(0, str(src_dir))
 
 import os
+
 os.environ["PYTHONPATH"] = str(Path.cwd())
 
 # Final check for the core modules we need to test
 try:
-    from src.config_gatekeeper import validate_configs
+    importlib.import_module("src.config_gatekeeper")
     print("Successfully imported config_gatekeeper")
 except ImportError as e:
     print(f"Import failed: {e}")
