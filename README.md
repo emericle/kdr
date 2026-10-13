@@ -177,6 +177,11 @@ naming a model that did not run. And when no decision has been recorded for a sy
 yet, the recommendation the dashboard falls back to is momentum, and its reasoning
 names the band the momentum was compared against instead of a Bellman threshold.
 
+Along the order path the dashboard is told once per order, after the risk manager
+approved it and the validator accepted it, so a decision that never became an order
+leaves nothing behind. The record's confidence is the model's; what survived sizing
+is stated as what it is — "Risk manager kept 12 of 20 proposed shares".
+
 ### Backtesting
 
 Replay stored bars through the decision model as a paper portfolio. This is the
