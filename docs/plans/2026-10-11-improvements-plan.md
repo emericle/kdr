@@ -167,6 +167,15 @@ said more than the system knew:
   race used to get an `IntegrityError` out of the pass. It rolls back and stores
   against the record that won.
 
+## Phase 2d — One record per order (found while implementing Phase 2c)
+
+Fixing the confidence exposed that the decision record itself was counted wrong:
+`translate_decision` pushed before risk management had sized anything, and the
+sizing helpers pushed again, so one order appeared twice and a refused decision
+appeared at all. The push moved to the point where an order exists and has been
+accepted, and the sizing fraction that had been passed as a confidence is now
+stated in the reasoning as a fact about sizing.
+
 ## Verification
 
 Run after each phase, not just at the end:
