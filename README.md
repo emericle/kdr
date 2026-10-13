@@ -171,6 +171,12 @@ different. The value function it scores with is the one a previous training pass
 stored in the `model_weights` table for the symbols being traded; with nothing
 stored the process starts untrained, which means scoring on the immediate reward.
 
+The confidence the dashboard prints is that margin, not a constant: an order sized
+from an action that came without a model report says that is all it has, rather than
+naming a model that did not run. And when no decision has been recorded for a symbol
+yet, the recommendation the dashboard falls back to is momentum, and its reasoning
+names the band the momentum was compared against instead of a Bellman threshold.
+
 ### Backtesting
 
 Replay stored bars through the decision model as a paper portfolio. This is the

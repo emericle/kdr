@@ -121,6 +121,7 @@ import AlpacaStreamProcessor` still resolves:
   - `.env` is read by `load_environment()` on first use rather than at import, so importing the module for its models no longer picks up credentials as a side effect.
   - Timestamps are stored as UTC-aware values (`DateTime(timezone=True)`), so PostgreSQL keeps the offset and range queries stay correct across DST and timezones. On read, `DatabaseManager` normalizes whatever the row holds back to a UTC-aware `datetime` before comparing it with the caller's boundary.
   - `(symbol, timestamp)` carries a unique index, so a bar a stream reconnect or a re-run hands back is skipped instead of stored twice: the batch is deduplicated in memory, checked against what is already stored with one query, and a batch that loses that check to a concurrent writer is retried one record at a time.
+  - `model_weights` keys one record per symbol list with a UNIQUE constraint on the key, and `save_model_weights` recovers when two processes training at once both read an empty slot and both insert: the loser rolls that attempt back and stores against the record that won, so the last pass is what the next process loads rather than an exception out of it.
   - Interval-start prices (`1h`, `24h`, `5d`, `30d`, `1y`, `ytd`) are read through `get_prices_at_interval_starts`, which shares one anchor read across every duration for a symbol and caches the result for the minute it was read in; the cache is dropped on every write, so the dashboard never serves a stale anchor.
   - A failed database operation is caught as `DB_FAILURES` (`DBAPIError` plus `InvalidRequestError`), which names "the database did not answer" rather than swallowing any bug in this file.
 - **Time (`src/times.py`)**:
@@ -137,6 +138,7 @@ import AlpacaStreamProcessor` still resolves:
   - `decide(state, symbol)` asks the model: it scores `candidate_actions` for the symbol with `BellmanEngine.score_actions` using `portfolio_transition` as the reward model, and returns the argmax plus a report (the action, every candidate's score, and a confidence that is how far the winner is ahead of the runner-up as a fraction of the whole spread). It places no order and mutates nothing. A state that does not name exactly one symbol raises rather than guessing.
   - A tie with `HOLD` decides `HOLD` in the executor: the engine stays a pure argmax and keeps the earlier candidate, but an indifferent portfolio manager holds rather than trading at the enumeration's accident.
   - `decide_and_execute` runs that decision through `translate_decision`, `OrderValidator` and `RiskManager` and places what survives, sizing against the state the model scored rather than against separate arguments.
+  - The confidence the dashboard is told is the one `decide` reported for that decision, not a constant; an action handed over without a report is pushed as the midpoint with reasoning that says no model report came with it, so the dashboard never names a model that did not run.
   - `execute_decision` moves the executor's own `cash` by what a filled order actually traded, so the next decision is scored against a portfolio that reflects what ran; a rejected order leaves cash alone.
 
 ### 5. Web Server & Live Dashboard (`src/web_server/`, `src/static/dashboard.html`)
@@ -146,6 +148,7 @@ The server is a package, so `python -m uvicorn src.web_server:app` and
 
 - **Data layer (`src/web_server/data_layer.py`)**: the thread-safe tick and decision buffers, the persistent index store, and the lazy database handle the dashboard reads.
 - **API layer (`src/web_server/api_layer.py`)**: the FastAPI routes (`/api/market-indexes`, `/api/symbols`, `/api/status`) and the real-time WebSocket endpoint (`/ws`).
+- **Recommendation Fallback (`compute_recommendation`)**: the decision recorded for the symbol when one exists; otherwise momentum measured against a fixed ±0.15% band. The reasoning strings name that band, because they are printed as reasons next to the confidence the dashboard prints, and naming a Bellman threshold here would be showing a number the model never produced.
 - **Templates**: static assets in `src/static/` (`dashboard.html`, `test-websocket.html`).
 - **Persistent Index Cache**: Indexes (VIX, DJIA, SP500, NASDAQ, RUSSELL2000) persist to disk (`data/index_cache.json`) to prevent empty or $0.00 displays when markets are closed.
 - **Market-Session Aware Deltas**: Lookback calculations anchor to the latest open market session rather than wall-clock time, handling weekends and market closures cleanly.
