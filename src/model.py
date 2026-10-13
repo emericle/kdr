@@ -1,4 +1,12 @@
-"""Bellman decision model: value functions, the Bellman engine, and the training loop."""
+"""Bellman decision model: value functions, the Bellman engine, and the training loop.
+
+``from __future__ import annotations`` is not cosmetic here: ``from_dict`` below
+annotates its return with the class it is written inside, and a class body runs
+before that name is bound. 3.14 evaluates annotations where they are written only
+when asked, 3.13 evaluates them immediately, and this module has to work on both.
+"""
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable, Iterable
 from typing import Protocol
