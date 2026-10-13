@@ -6,6 +6,7 @@ plotly
 scikit-learn
 python-dotenv
 requests
+certifi>=2024.0.0
 fastapi>=0.104.0
 uvicorn>=0.24.0,<0.30.0
 wsproto>=1.2.0

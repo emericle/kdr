@@ -52,6 +52,32 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+The `location /kdr/ws` block upgrades the browser's WebSocket to the backend's
+`/ws`. The live ticks for AAPL, BTC and TSLA travel over that socket. If the
+upgrade is broken the REST checks still pass, so `bin/deploy_rpi4.sh` now opens
+the proxied socket and reads the backend's init frame; a failure there fails the
+deploy instead of shipping a dashboard that shows "Disconnected - reconnecting".
+
+---
+
+## Backend Logging
+
+The systemd service sets `Environment=KDR_LOG_FILE=/var/log/kdr/backend.log`. The
+pipeline's rotating file handler reads that variable, so every backend record —
+including an Alpaca stream that cannot verify its TLS certificate — is written to
+a file you can tail:
+
+```bash
+tail -f /var/log/kdr/backend.log
+```
+
+The Alpaca Trade Stream connects over TLS. certifi (in `requirements.txt`) ships
+the CA bundle the stream verifies against; `src/stream_client.py` points the
+process at it before the stream starts. A bare interpreter with no CA bundle
+fails the handshake with `CERTIFICATE_VERIFY_FAILED: unable to get local issuer
+certificate`, which leaves the market buffer empty and the charts at
+"Waiting for Market Stream".
+
 ---
 
 ## Cloudflare Tunnel Configuration

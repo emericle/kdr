@@ -26,6 +26,18 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 _debug_enabled = False
 
 
+def resolve_log_file(default: str = LOG_FILENAME) -> str:
+    """Where the rotating log goes, honouring the ``KDR_LOG_FILE`` override.
+
+    The deployed backend runs under systemd and the user asked that a backend
+    failure be visible in a real file (``/var/log/kdr/backend``), not only in
+    ``journalctl``. The deploy sets ``KDR_LOG_FILE`` to that path; a local run
+    leaves it unset and keeps the repo's ``logs/kdr.log``. Read at call time,
+    not at import, so the entrypoint's environment is what counts.
+    """
+    return os.environ.get("KDR_LOG_FILE", default)
+
+
 def set_debug(verbose: bool) -> None:
     """Remember whether the entrypoint asked for DEBUG level."""
     global _debug_enabled
@@ -44,7 +56,7 @@ def is_debug() -> bool:
 
 def configure_logging(
     verbose: bool = False,
-    log_filename: str = LOG_FILENAME,
+    log_filename: str | None = None,
     stream: TextIO | None = None,
 ) -> logging.Logger:
     """Install console and rotating-file handlers on the root logger.
@@ -61,6 +73,7 @@ def configure_logging(
     Returns:
         The root logger, so the caller can set per-module levels on it.
     """
+    log_filename = resolve_log_file(log_filename or LOG_FILENAME)
     os.makedirs(os.path.dirname(log_filename), exist_ok=True)
     set_debug(verbose)
     logging.basicConfig(
