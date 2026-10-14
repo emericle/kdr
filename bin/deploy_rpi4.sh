@@ -59,6 +59,14 @@ else
     echo -e "${GREEN}✓ Verified DATABASE_URL points to pinky.local${NC}"
 fi
 
+# The gatekeeper reads the required-variable list from bin/check_env.py when the
+# process starts, so a payload without it ships a backend that exits before it
+# can serve anything. Fail here rather than in a systemd restart loop.
+if [ ! -f "${BIN_DIR}/check_env.py" ]; then
+    echo -e "${RED}Error: ${BIN_DIR}/check_env.py is missing; the deployed gatekeeper cannot start without it.${NC}"
+    exit 1
+fi
+
 if ! ssh -o ConnectTimeout=8 "${TARGET_HOST}" "echo 'SSH Connected'" > /dev/null 2>&1; then
     echo -e "${RED}Error: Cannot connect to ${TARGET_HOST} via SSH.${NC}"
     exit 1
@@ -97,9 +105,12 @@ echo -e "${GREEN}✓ Frontend deployed to ${FRONTEND_DIR}/index.html${NC}"
 # ------------------------------------------------------------------------------
 echo -e "${YELLOW}[4/7]${NC} Deploying backend to ${BACKEND_DIR}..."
 
-# The payload is the project root's src/, requirements.txt and data/, plus the
-# two entry scripts. Those scripts live in bin/ now but land at BACKEND_DIR's
-# root, which is the layout the systemd service and the remote scripts expect.
+# The payload mirrors the repo layout: src/, requirements.txt and bin/. The
+# gatekeeper reads the required-variable list from bin/check_env.py at startup,
+# so a backend without bin/ exits before it can serve anything; shipping the
+# whole bin/ directory is what keeps the deployed tree and the repo tree
+# agreeing. The two entry scripts used to be shipped loose at BACKEND_DIR's
+# root, which is where this gap came from.
 rsync -avz --delete \
     --exclude=".venv" \
     --exclude="__pycache__" \
@@ -110,8 +121,7 @@ rsync -avz --delete \
     --exclude=".git" \
     "${KDR_ROOT}/src" \
     "${KDR_ROOT}/requirements.txt" \
-    "${BIN_DIR}/start.sh" \
-    "${BIN_DIR}/daemon.sh" \
+    "${KDR_ROOT}/bin" \
     "${TARGET_HOST}:${BACKEND_DIR}/"
 
 # Sync data directory if it exists (for cache persistence)
@@ -167,6 +177,15 @@ echo -e "${YELLOW}[6/7]${NC} Configuring systemd service and Nginx reverse proxy
 ssh "${TARGET_HOST}" "bash -s" <<'REMOTE_SERVICES'
 set -euo pipefail
 
+# 0. Backend log directory. The user asked that a backend failure be visible in
+# a real file, not only in journalctl. The pipeline's rotating file handler reads
+# KDR_LOG_FILE from the environment, so pointing it here writes the Alpaca stream
+# errors (the "unable to get local issuer certificate" class of failure) to a
+# path a reviewer can tail. The service runs as emericle, so that user owns the
+# directory.
+sudo mkdir -p /var/log/kdr
+sudo chown -R ${TARGET_USER:-emericle}:${TARGET_USER:-emericle} /var/log/kdr
+
 # 1. Systemd Service Definition
 sudo tee /etc/systemd/system/kdr.service > /dev/null <<'EOF'
 [Unit]
@@ -178,6 +197,7 @@ Type=simple
 User=emericle
 WorkingDirectory=/var/www/html/kdr/backend
 EnvironmentFile=/var/www/html/kdr/backend/.env
+Environment=KDR_LOG_FILE=/var/log/kdr/backend.log
 ExecStart=/var/www/html/kdr/backend/.venv/bin/python src/scraper.py --debug
 Restart=always
 RestartSec=5
@@ -278,22 +298,69 @@ if ! sudo systemctl is-active --quiet kdr.service; then
     exit 1
 fi
 
-# Give backend a moment to bind port 8001
+# Give backend a moment to bind port 8001 (includes DB init timeouts if DB is unreachable)
+PORT_OK=0
 COUNT=0
-while [ $COUNT -lt 15 ]; do
+while [ $COUNT -lt 30 ]; do
     if curl -s http://127.0.0.1:8001/api/status | grep -q "online"; then
         echo "✓ Backend port 8001 status OK"
+        PORT_OK=1
         break
     fi
     sleep 1
     COUNT=$((COUNT + 1))
 done
 
+if [ $PORT_OK -eq 0 ]; then
+    echo "Error: Backend did not bind port 8001 within 30s. Recent logs:"
+    sudo journalctl -u kdr.service -n 30 --no-pager
+    exit 1
+fi
+
 echo "Checking Nginx frontend route (/kdr/)..."
 curl -sI http://127.0.0.1/kdr/ | grep -q "200 OK" && echo "✓ Frontend route OK"
 
 echo "Checking Nginx API proxy (/kdr/api/market-indexes)..."
 curl -s http://127.0.0.1/kdr/api/market-indexes | grep -q "VIX" && echo "✓ Nginx API proxy OK"
+
+# The dashboard's live ticks travel over the WebSocket at /kdr/ws, which Nginx
+# upgrades and forwards to the backend's /ws. The REST checks above pass even
+# when that upgrade is broken, so a broken /kdr/ws used to deploy "successful"
+# and still show "Disconnected - reconnecting". Do the same upgrade a browser
+# does: open the proxied socket and read the init frame the backend sends on
+# connect. A failure here is the frontend-to-backend leg; a success means the
+# socket is fine and any empty chart is a backend-to-Alpaca problem, which the
+# /var/log/kdr/backend.log now names.
+echo "Checking Nginx WebSocket upgrade (/kdr/ws)..."
+WS_OK=0
+COUNT=0
+while [ $COUNT -lt 10 ]; do
+    if /var/www/html/kdr/backend/.venv/bin/python - <<'PYWS'
+import asyncio, sys, json, websockets
+async def go():
+    try:
+        async with websockets.connect("ws://127.0.0.1/kdr/ws", open_timeout=4) as ws:
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=4))
+            sys.exit(0 if msg.get("type") in ("init", "update") else 2)
+    except Exception as e:
+        print("ws check error:", type(e).__name__, e)
+        sys.exit(3)
+asyncio.run(go())
+PYWS
+    then
+        echo "✓ Nginx WebSocket upgrade OK (received init frame)"
+        WS_OK=1
+        break
+    fi
+    sleep 1
+    COUNT=$((COUNT + 1))
+done
+if [ $WS_OK -eq 0 ]; then
+    echo "Error: /kdr/ws did not deliver an init frame. The live ticks cannot"
+    echo "       reach the dashboard. Check the Nginx 'location /kdr/ws' upgrade"
+    echo "       and /var/log/kdr/backend.log for a backend-to-Alpaca failure."
+    exit 1
+fi
 REMOTE_TEST
 
 # Test directly from deployment host

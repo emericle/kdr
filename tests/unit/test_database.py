@@ -196,6 +196,29 @@ class TestDatabaseManager(unittest.TestCase):
             result = self.db_manager.get_model_weights('TSLA')
             self.assertIsNone(result)
 
+    def test_get_model_weights_returns_none_on_db_failure(self):
+        """A connection timeout or DBAPI failure must return None, not crash startup."""
+        from sqlalchemy.exc import OperationalError
+
+        mock_session = MagicMock()
+        mock_session.query.side_effect = OperationalError("connection timeout expired", None, None)
+
+        with patch.object(self.db_manager.connection, 'get_session', return_value=mock_session):
+            result = self.db_manager.get_model_weights('TSLA')
+            self.assertIsNone(result)
+
+    def test_save_model_weights_returns_false_on_db_failure(self):
+        """A lost database during weight persistence must return False and roll back."""
+        from sqlalchemy.exc import OperationalError
+
+        mock_session = MagicMock()
+        mock_session.query.side_effect = OperationalError("connection timeout expired", None, None)
+
+        with patch.object(self.db_manager.connection, 'get_session', return_value=mock_session):
+            result = self.db_manager.save_model_weights('TSLA', {"weights": [0.1], "bias": 0.0})
+            self.assertFalse(result)
+            mock_session.rollback.assert_called_once()
+
     def test_get_model_weights_parses_json_weights(self):
         symbol = 'TSLA'
         weights = {"w1": 0.8, "w2": 0.2, "w3": 0.5}

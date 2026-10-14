@@ -252,6 +252,11 @@ five backups, so a service left running for weeks cannot fill the disk with a
 per-run file. The rotation backups (`logs/kdr.log.*`) are gitignored, and the deploy
 script excludes the whole `logs/` directory rather than only `logs/*.log`.
 
+Set `KDR_LOG_FILE` to move that file. The deployed backend sets it to
+`/var/log/kdr/backend.log`, so a backend failure — a lost Alpaca stream, a refused
+database statement — is visible in a file a reviewer can tail, not only in
+`journalctl`. A local run leaves it unset and keeps `logs/kdr.log`.
+
 ### Real-Time Web Dashboard
 
 Start the FastAPI web server to access the live trading dashboard:

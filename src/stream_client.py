@@ -38,6 +38,39 @@ except ImportError:
     AlpacaTradeStream = None
 logger = logging.getLogger("DataIngestion")
 
+# The Alpaca Trade Stream connects over TLS. The SDK builds its websocket SSL
+# context from the interpreter's default CA path, and an interpreter that has no
+# CA bundle there (a bare CPython build, a fresh venv on the Pi) fails the
+# handshake with "CERTIFICATE_VERIFY_FAILED: unable to get local issuer
+# certificate". That failure is silent to the dashboard: no tick ever reaches
+# the market buffer, so the charts sit at "Waiting for Market Stream" and the
+# SDK retries the dead socket every ~150 ms and floods the log. certifi ships a
+# CA bundle in the venv, so point the process at it before the stream starts.
+# An explicit SSL_CERT_FILE in the environment wins, so a host that already
+# configured its own bundle is not overridden.
+def configure_ca_certificates() -> str | None:
+    """Point the process's SSL at certifi's CA bundle, and return its path.
+
+    Returns the bundle path that is now in effect, or ``None`` when certifi is
+    not installed and the interpreter's default is left alone.
+    """
+    try:
+        import certifi
+    except ImportError:
+        logger.warning(
+            "certifi not installed; the Alpaca stream relies on the interpreter's "
+            "default CA path and may fail TLS verification. Add certifi to requirements.txt."
+        )
+        return None
+    bundle = certifi.where()
+    # Honour a caller-supplied bundle: only fill the default when nothing set it.
+    if not os.getenv("SSL_CERT_FILE"):
+        os.environ["SSL_CERT_FILE"] = bundle
+    if not os.getenv("SSL_CERT_DIR"):
+        os.environ["SSL_CERT_DIR"] = os.path.dirname(bundle)
+    logger.info("CA certificates for the Alpaca stream resolved to: %s", bundle)
+    return bundle
+
 # A malformed wire payload: an attribute the Alpaca entity does not have, a
 # value that will not convert, a key the payload did not carry.
 PAYLOAD_FAILURES = (AttributeError, TypeError, ValueError, KeyError)
@@ -342,6 +375,11 @@ class AlpacaStreamProcessor:
         self.running = True
         logger.info("Alpaca Stream Processor started.")
         logger.info("State mapper initialized for domain state mapping")
+
+        # Resolve the CA bundle before any TLS connection: the crypto snapshot
+        # below and the websocket stream both need it, and the websocket path in
+        # particular fails without a bundle on a bare interpreter.
+        configure_ca_certificates()
 
         # Fetch initial snapshot for crypto assets
         self._fetch_crypto_snapshot()
