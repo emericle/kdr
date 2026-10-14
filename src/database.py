@@ -506,6 +506,7 @@ class DatabaseManager:
             if not latest:
                 for duration in missing:
                     prices[duration] = None
+                    self._interval_cache[(symbol_u, duration, minute)] = None
                 return prices
             latest_time = to_utc(latest.timestamp) if isinstance(latest.timestamp, datetime) else now_utc()
 
@@ -517,7 +518,10 @@ class DatabaseManager:
             return prices
         except DB_FAILURES as e:
             logger.error(f"Error retrieving interval start prices for {symbol}: {e}")
-            return dict.fromkeys(wanted)
+            for duration in missing:
+                prices[duration] = None
+                self._interval_cache[(symbol_u, duration, minute)] = None
+            return prices
         finally:
             self.connection.close(session)
 
@@ -558,6 +562,9 @@ class DatabaseManager:
                     return json.loads(query.weights_json)
                 except (json.JSONDecodeError, TypeError):
                     return None
+            return None
+        except DB_FAILURES as e:
+            logger.error("Error retrieving model weights for %s: %s", symbol, e)
             return None
         finally:
             self.connection.close(session)
@@ -611,10 +618,14 @@ class DatabaseManager:
                 # constraint on `symbol` is what makes one of them lose. Roll
                 # that attempt back and store against the record that won, so
                 # the last training pass is what the next process loads.
-                session.rollback()
+                self._rollback(session)
                 self._write_weights(session, symbol, payload, trained_at)
                 session.commit()
             return True
+        except DB_FAILURES as e:
+            logger.error("Error saving model weights for %s: %s", symbol, e)
+            self._rollback(session)
+            return False
         finally:
             self.connection.close(session)
 

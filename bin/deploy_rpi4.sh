@@ -298,16 +298,24 @@ if ! sudo systemctl is-active --quiet kdr.service; then
     exit 1
 fi
 
-# Give backend a moment to bind port 8001
+# Give backend a moment to bind port 8001 (includes DB init timeouts if DB is unreachable)
+PORT_OK=0
 COUNT=0
-while [ $COUNT -lt 15 ]; do
+while [ $COUNT -lt 30 ]; do
     if curl -s http://127.0.0.1:8001/api/status | grep -q "online"; then
         echo "✓ Backend port 8001 status OK"
+        PORT_OK=1
         break
     fi
     sleep 1
     COUNT=$((COUNT + 1))
 done
+
+if [ $PORT_OK -eq 0 ]; then
+    echo "Error: Backend did not bind port 8001 within 30s. Recent logs:"
+    sudo journalctl -u kdr.service -n 30 --no-pager
+    exit 1
+fi
 
 echo "Checking Nginx frontend route (/kdr/)..."
 curl -sI http://127.0.0.1/kdr/ | grep -q "200 OK" && echo "✓ Frontend route OK"

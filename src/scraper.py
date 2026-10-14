@@ -34,7 +34,13 @@ if project_root not in sys.path:
 from src.config_gatekeeper import validate_configs
 from src.data_buffer import DataStreamBuffer, Tick
 from src.db_writer import DBWriterWorker, run_worker_threads
-from src.logging_config import LOG_BACKUP_COUNT, LOG_FILENAME, LOG_MAX_BYTES, configure_logging
+from src.logging_config import (
+    LOG_BACKUP_COUNT,
+    LOG_FILENAME,
+    LOG_MAX_BYTES,
+    configure_logging,
+    resolve_log_file,
+)
 from src.stream_client import AlpacaStreamProcessor
 from src.symbols import DEFAULT_SYMBOLS, normalize_symbols
 
@@ -70,7 +76,7 @@ def setup_logging(debug: bool = False):
     logger.info("Starting KDR Data Ingestion Pipeline")
     logger.info(
         "Log file: %s (rotates at %s bytes, %s kept)",
-        LOG_FILENAME,
+        resolve_log_file(),
         LOG_MAX_BYTES,
         LOG_BACKUP_COUNT,
     )
