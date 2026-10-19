@@ -36,7 +36,6 @@ from src.data_buffer import DataStreamBuffer, Tick
 from src.db_writer import DBWriterWorker, run_worker_threads
 from src.logging_config import (
     LOG_BACKUP_COUNT,
-    LOG_FILENAME,
     LOG_MAX_BYTES,
     configure_logging,
     resolve_log_file,

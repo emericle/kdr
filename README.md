@@ -360,7 +360,7 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 │   ├── data_buffer.py   # Minute-bucketed tick aggregation (DataStreamBuffer)
 │   ├── db_writer.py     # Queue draining, DBWriterWorker, run_worker_threads, live decisions
 │   ├── logging_config.py # The one logging configuration (rotating logs/kdr.log)
-│   ├── database.py      # SQLAlchemy persistence, schema migrations, stored weights
+│   ├── database.py      # SQLAlchemy persistence and stored weights
 │   ├── state_mapper.py  # Tick/bar → domain states, incl. the state the model decides on
 │   ├── sentiment_adapter.py # Adanos sentiment integration
 │   ├── web_server/      # FastAPI REST & WebSocket server, as a package
@@ -387,3 +387,5 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 - [Bellman Decision Spec](docs/specs/bellman_decision.md): Mathematical and functional specification for the core model.
 - [Improvement Plan](docs/plans/2026-10-11-improvements-plan.md): Review findings and phased fix plan.
 - [TODO Checklist](docs/plans/2026-10-11-todo.md): Actionable list tracking each planned fix.
+- [Review Findings (2026-10-15)](docs/plans/2026-10-15-review-findings.md): Second-pass review — persistence, performance, and UX findings.
+- [TODO Checklist (2026-10-15)](docs/plans/2026-10-15-todo.md): Actionable list, led by the data-preservation/migration task.

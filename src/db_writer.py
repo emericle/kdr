@@ -187,12 +187,6 @@ class DBWriterWorker(threading.Thread):
                 logger.error("Error in DBWriterWorker: %s", e)
                 time.sleep(1)
 
-    def save_to_db(self, symbol: str, bar_data: dict) -> None:
-        if is_debug():
-            logger.debug("Entering save_to_db for %s", symbol)
-        if is_debug():
-            logger.debug("Saving record for %s at %s", symbol, bar_data['timestamp'])
-        # Database writing logic here...
 
 def _seed_dashboard(db_manager: DatabaseManager, resolved_symbols: list[str]) -> None:
     """Give the dashboard a first tick per symbol from what the database already holds.
