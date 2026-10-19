@@ -104,8 +104,21 @@ class AlpacaStreamProcessor:
         self.buffer = DataStreamBuffer()
         self.running = True
         self.stream_client = stream_client
+        self.rest_client: Any | None = self._init_rest_client()
         self._stream_thread: threading.Thread | None = None
         self._flusher_thread: threading.Thread | None = None
+
+    def _init_rest_client(self) -> Any | None:
+        """Build the Alpaca REST client once in ``__init__`` when credentials are present."""
+        if not (self.api_key and self.api_secret):
+            return None
+        try:
+            from alpaca_trade_api.rest import REST
+
+            return REST(self.api_key, self.api_secret, self.base_url or None)
+        except (ImportError, *STREAM_FAILURES) as e:
+            logger.debug("Alpaca REST client not initialized: %s", e)
+            return None
 
     def _extract_market_payload(self, msg: Any) -> dict[str, Any] | None:
         """Unified normalization helper for raw tick or bar messages."""
@@ -262,10 +275,12 @@ class AlpacaStreamProcessor:
         if not crypto_syms or not (self.api_key and self.api_secret):
             return
         try:
-            from alpaca_trade_api.rest import REST
-            rest_client = REST(self.api_key, self.api_secret, self.base_url or None)
+            if self.rest_client is None:
+                self.rest_client = self._init_rest_client()
+            if self.rest_client is None:
+                return
             alpaca_syms = [to_alpaca_symbol(s) for s in crypto_syms]
-            trades = rest_client.get_latest_crypto_trades(alpaca_syms)
+            trades = self.rest_client.get_latest_crypto_trades(alpaca_syms)
             for alpaca_s, t in trades.items():
                 app_s = from_alpaca_symbol(alpaca_s)
                 tick = {

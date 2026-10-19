@@ -18,7 +18,6 @@ from src.web_server.data_layer import (
     INDEX_CANDIDATE_SYMBOLS,
     INDEX_DISPLAY_NAMES,
     INDEX_TICKERS,
-    PROJECT_ROOT,
     TRACKED_INDEXES,
     _query_historical_ticks_safe,
     compute_recommendation,
@@ -86,13 +85,18 @@ async def broadcast_loop(interval: float = 1.0):
     logger.info("WebSocket broadcast loop started (%ss interval)", interval)
     while True:
         try:
+            index_store.flush_if_due()
+            if not manager.active_connections:
+                await asyncio.sleep(interval)
+                continue
+
             symbols = market_buffer.get_symbols()
             symbol_summaries = []
             decisions = []
 
             for sym in symbols:
                 summary = market_buffer.get_summary(sym)
-                rec = compute_recommendation(sym)
+                rec = compute_recommendation(sym, summary=summary)
                 summary["recommendation"] = rec["action"]
                 summary["confidence"] = rec["confidence"]
                 symbol_summaries.append(summary)
@@ -112,6 +116,7 @@ async def broadcast_loop(interval: float = 1.0):
             }
 
             await manager.broadcast_json(payload)
+            await asyncio.sleep(interval)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -119,8 +124,7 @@ async def broadcast_loop(interval: float = 1.0):
             # and the tick can fail from any of the buffer, DB and websocket paths
             # above, so this is the one place a broad catch is deliberate.
             logger.debug("Broadcast loop tick error: %s", e)
-
-        await asyncio.sleep(interval)
+            await asyncio.sleep(interval)
 
 
 # ============================================================================
@@ -139,6 +143,7 @@ async def lifespan(app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
+    index_store.flush_cache(force=False)
 
 
 app = FastAPI(title="KDR Real-Time Trading Dashboard", lifespan=lifespan)
@@ -151,25 +156,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_HTML_PATH = os.path.join(PROJECT_ROOT, "static", "dashboard.html")
 TEST_WS_HTML_PATH = os.path.join(PROJECT_ROOT, "static", "test-websocket.html")
+
+
+def _load_static_html(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+_DASHBOARD_HTML: str | None = _load_static_html(STATIC_HTML_PATH)
+_DASHBOARD_HTML_SOURCE_PATH: str = STATIC_HTML_PATH
+_TEST_WS_HTML: str | None = _load_static_html(TEST_WS_HTML_PATH)
+_TEST_WS_HTML_SOURCE_PATH: str = TEST_WS_HTML_PATH
+
+
+def _get_html_content(path: str, cached: str | None, cached_path: str) -> str | None:
+    if path == cached_path and cached is not None:
+        return cached
+    return _load_static_html(path)
 
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/symbol/{symbol}", response_class=HTMLResponse)
 async def serve_dashboard(symbol: str | None = None):
-    if os.path.exists(STATIC_HTML_PATH):
-        with open(STATIC_HTML_PATH, encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+    content = _get_html_content(STATIC_HTML_PATH, _DASHBOARD_HTML, _DASHBOARD_HTML_SOURCE_PATH)
+    if content is not None:
+        return HTMLResponse(content=content)
     return HTMLResponse(content="<h1>Dashboard HTML template not found.</h1>", status_code=404)
 
 
 @app.get("/test-websocket", response_class=HTMLResponse)
 @app.get("/test-websocket.html", response_class=HTMLResponse)
 async def serve_test_websocket():
-    if os.path.exists(TEST_WS_HTML_PATH):
-        with open(TEST_WS_HTML_PATH, encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+    content = _get_html_content(TEST_WS_HTML_PATH, _TEST_WS_HTML, _TEST_WS_HTML_SOURCE_PATH)
+    if content is not None:
+        return HTMLResponse(content=content)
     return HTMLResponse(content="<h1>Test WebSocket HTML template not found.</h1>", status_code=404)
 
 
@@ -190,7 +216,7 @@ async def get_symbols():
     results = []
     for sym in symbols:
         summary = market_buffer.get_summary(sym)
-        rec = compute_recommendation(sym)
+        rec = compute_recommendation(sym, summary=summary)
         summary["recommendation"] = rec["action"]
         summary["confidence"] = rec["confidence"]
         results.append(summary)
@@ -287,26 +313,72 @@ def _window_start(duration: str | None, now: datetime) -> datetime | None:
     return None
 
 
+def _is_chronological(ticks: list[dict[str, Any]]) -> bool:
+    for idx in range(len(ticks) - 1):
+        if float(ticks[idx].get("timestamp", 0)) > float(ticks[idx + 1].get("timestamp", 0)):
+            return False
+    return True
+
+
 def _merge_ticks(
     historical: list[dict[str, Any]], buffered: list[dict[str, Any]], limit: int | None
 ) -> list[dict[str, Any]]:
-    """DB ticks plus buffer ticks, deduplicated by (timestamp, price), oldest first."""
-    seen_db_keys = set()
-    all_ticks = []
-    for t in historical:
-        ts = float(t.get("timestamp", 0))
-        seen_db_keys.add((round(ts, 2), t.get("price")))
-        all_ticks.append(t)
+    """Linear two-pointer merge of chronologically ordered DB and buffer ticks, oldest first.
 
-    for t in buffered:
-        ts = float(t.get("timestamp", 0))
-        if (round(ts, 2), t.get("price")) not in seen_db_keys:
-            all_ticks.append(t)
+    Deduplicates by timestamp with buffer ticks taking precedence over DB ticks,
+    falling back to sorting an input only if it is not already in chronological order.
+    """
+    hist = (
+        historical
+        if _is_chronological(historical)
+        else sorted(historical, key=lambda x: float(x.get("timestamp", 0)))
+    )
+    buf = (
+        buffered
+        if _is_chronological(buffered)
+        else sorted(buffered, key=lambda x: float(x.get("timestamp", 0)))
+    )
 
-    all_ticks.sort(key=lambda x: x.get("timestamp", 0))
-    if limit and len(all_ticks) > limit:
-        all_ticks = all_ticks[-limit:]
-    return all_ticks
+    merged: list[dict[str, Any]] = []
+    seen_keys: set[tuple[float, Any]] = set()
+    i = 0
+    j = 0
+    len_h = len(hist)
+    len_b = len(buf)
+
+    while i < len_h and j < len_b:
+        ts_h = float(hist[i].get("timestamp", 0))
+        ts_b = float(buf[j].get("timestamp", 0))
+        if ts_h <= ts_b:
+            t = hist[i]
+            i += 1
+        else:
+            t = buf[j]
+            j += 1
+        key = (round(float(t.get("timestamp", 0)), 2), t.get("price"))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            merged.append(t)
+
+    while i < len_h:
+        t = hist[i]
+        i += 1
+        key = (round(float(t.get("timestamp", 0)), 2), t.get("price"))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            merged.append(t)
+
+    while j < len_b:
+        t = buf[j]
+        j += 1
+        key = (round(float(t.get("timestamp", 0)), 2), t.get("price"))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            merged.append(t)
+
+    if limit and len(merged) > limit:
+        merged = merged[-limit:]
+    return merged
 
 
 def _moving_average(prices: list[float], window: int) -> float:
@@ -358,7 +430,7 @@ async def get_symbol_detail(
             "time_str": hhmmss(now_utc())
         })
 
-    decision = compute_recommendation(symbol)
+    decision = compute_recommendation(symbol, summary=summary)
     decisions_history = decision_buffer.get_history(symbol, limit=20)
 
     # Compute moving averages (50-day and 200-day) if enough data
@@ -391,7 +463,7 @@ async def websocket_endpoint(websocket: WebSocket):
         decisions = []
         for sym in symbols:
             s = market_buffer.get_summary(sym)
-            r = compute_recommendation(sym)
+            r = compute_recommendation(sym, summary=s)
             s["recommendation"] = r["action"]
             s["confidence"] = r["confidence"]
             summaries.append(s)

@@ -6,6 +6,8 @@ themselves live in :mod:`src.web_server.api_layer`, which imports this module.
 """
 
 import asyncio
+import atexit
+import itertools
 import json
 import logging
 import os
@@ -182,11 +184,15 @@ DEFAULT_INDEX_VALUATIONS = {
 
 class IndexStore:
     """Thread-safe persistent store for index valuations."""
-    def __init__(self, cache_file: str = INDEX_CACHE_FILE):
+    def __init__(self, cache_file: str = INDEX_CACHE_FILE, flush_interval: float = 5.0):
         self.cache_file = cache_file
         self._lock = threading.Lock()
         self._indexes: dict[str, dict[str, Any]] = {}
+        self._dirty: bool = False
+        self._last_flush_mono: float = 0.0
+        self._flush_interval: float = flush_interval
         self.load()
+        atexit.register(self.flush_cache, False)
 
     def load(self):
         with self._lock:
@@ -206,17 +212,29 @@ class IndexStore:
                 except CACHE_FAILURES as e:
                     logger.debug("Failed loading index cache: %s", e)
 
-    def _save_unlocked(self):
+    def _write_snapshot(self, snapshot: dict[str, dict[str, Any]]) -> None:
         try:
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
             with open(self.cache_file, "w") as f:
-                json.dump(self._indexes, f, indent=2)
+                json.dump(snapshot, f, indent=2)
         except CACHE_FAILURES as e:
             logger.debug("Failed saving index cache: %s", e)
 
-    def save(self):
+    def flush_cache(self, force: bool = True) -> None:
         with self._lock:
-            self._save_unlocked()
+            if not self._dirty and not force:
+                return
+            snapshot = {k: dict(v) for k, v in self._indexes.items()}
+            self._dirty = False
+            self._last_flush_mono = time.monotonic()
+        self._write_snapshot(snapshot)
+
+    def flush_if_due(self) -> None:
+        if self._dirty and (time.monotonic() - self._last_flush_mono) >= self._flush_interval:
+            self.flush_cache(force=False)
+
+    def save(self):
+        self.flush_cache(force=True)
 
     def update_index(
         self,
@@ -270,7 +288,14 @@ class IndexStore:
             item["currentPrice"] = round(float(current_price), 2)
             item["priceType"] = price_type
             item["lastUpdate"] = last_update or hhmmss(now_utc())
-            self._save_unlocked()
+            self._dirty = True
+            now_mono = time.monotonic()
+            should_flush = (
+                self._last_flush_mono == 0.0
+                or (now_mono - self._last_flush_mono) >= self._flush_interval
+            )
+        if should_flush:
+            self.flush_cache(force=False)
 
     def get_index(self, index: str) -> dict[str, Any]:
         index = index.upper()
@@ -334,8 +359,11 @@ class MarketDataBuffer:
 
     def __init__(self, max_ticks: int = 500):
         self.max_ticks = max_ticks
-        self._history: dict[str, deque] = {}
+        self._history: dict[str, deque[MarketTick]] = {}
         self._open_prices: dict[str, float] = {}
+        self._running_volume: dict[str, float] = {}
+        self._running_high: dict[str, float] = {}
+        self._running_low: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def add_tick(
@@ -357,11 +385,45 @@ class MarketDataBuffer:
         tick = MarketTick(symbol=symbol, price=float(price), size=float(size or 0.0), timestamp=ts)
 
         with self._lock:
-            if symbol not in self._history:
-                self._history[symbol] = deque(maxlen=self.max_ticks)
+            history = self._history.get(symbol)
+            if history is None or len(history) == 0:
+                history = deque(maxlen=self.max_ticks)
+                self._history[symbol] = history
                 self._open_prices[symbol] = tick.price
+                history.append(tick)
+                self._running_volume[symbol] = tick.size
+                self._running_high[symbol] = tick.price
+                self._running_low[symbol] = tick.price
+            else:
+                evicted: MarketTick | None = None
+                if len(history) == self.max_ticks:
+                    evicted = history.popleft()
 
-            self._history[symbol].append(tick)
+                if not history or ts >= history[-1].timestamp:
+                    history.append(tick)
+                else:
+                    insert_idx = len(history)
+                    while insert_idx > 0 and history[insert_idx - 1].timestamp > ts:
+                        insert_idx -= 1
+                    history.insert(insert_idx, tick)
+
+                prev_vol = self._running_volume.get(symbol, 0.0)
+                prev_high = self._running_high.get(symbol, tick.price)
+                prev_low = self._running_low.get(symbol, tick.price)
+
+                if evicted is not None:
+                    self._running_volume[symbol] = max(0.0, prev_vol - evicted.size) + tick.size
+                    if evicted.price >= prev_high or evicted.price <= prev_low:
+                        self._running_high[symbol] = max(t.price for t in history)
+                        self._running_low[symbol] = min(t.price for t in history)
+                    else:
+                        self._running_high[symbol] = max(prev_high, tick.price)
+                        self._running_low[symbol] = min(prev_low, tick.price)
+                else:
+                    self._running_volume[symbol] = prev_vol + tick.size
+                    self._running_high[symbol] = max(prev_high, tick.price)
+                    self._running_low[symbol] = min(prev_low, tick.price)
+
             open_p = self._open_prices.get(symbol, tick.price)
 
         # Update index persistent store if this symbol corresponds to a tracked index or proxy
@@ -382,15 +444,17 @@ class MarketDataBuffer:
         symbol = symbol.upper()
         with self._lock:
             history = self._history.get(symbol)
-            if history and len(history) > 0:
-                return max(reversed(history), key=lambda t: t.timestamp)
+            if history:
+                return history[-1]
             return None
 
     def get_ticks(self, symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         symbol = symbol.upper()
         with self._lock:
-            history = self._history.get(symbol, deque())
-            items = list(history)[-limit:]
+            history = self._history.get(symbol)
+            if not history or limit <= 0:
+                return []
+            items = list(itertools.islice(history, max(0, len(history) - limit), None))
             return [t.to_dict() for t in items]
 
     def get_price_and_change(self, symbol: str, duration: str = "24h") -> dict[str, Any] | None:
@@ -409,8 +473,8 @@ class MarketDataBuffer:
 
             # Priority 1: Use buffer history if available
             if history:
-                latest_tick = max(reversed(history), key=lambda t: t.timestamp)
-                earliest_tick = min(history, key=lambda t: t.timestamp)
+                latest_tick = history[-1]
+                earliest_tick = history[0]
                 current_price = latest_tick.price
                 time_str = hhmmss(latest_tick.timestamp)
 
@@ -474,7 +538,9 @@ class MarketDataBuffer:
         db = get_db_manager()
         if db and hasattr(db, "get_prices_at_interval_starts"):
             try:
-                return db.get_prices_at_interval_starts(symbol)
+                res = db.get_prices_at_interval_starts(symbol)
+                if isinstance(res, dict):
+                    return res
             except DB_READ_FAILURES as e:
                 logger.debug("Batched interval lookup for %s failed: %s", symbol, e)
         return {}
@@ -500,19 +566,30 @@ class MarketDataBuffer:
             stats[f"changePercent{dur}"] = round((change / anchor * 100.0) if anchor > 0 else 0.0, 2)
         return stats
 
-    def _change_for_duration(self, symbol: str, current: float, duration: str, fallback: float) -> tuple[float, float]:
+    def _change_for_duration(
+        self,
+        symbol: str,
+        current: float,
+        duration: str,
+        fallback: float,
+        starts: dict[str, float | None] | None = None,
+    ) -> tuple[float, float]:
         """``(change, change_percent)`` for one duration, from the DB anchor or the buffer's open."""
+        if starts is not None and duration in starts:
+            anchor_val = self._interval_anchor(starts, duration, fallback)
+            change = current - anchor_val
+            return change, (change / anchor_val * 100.0) if anchor_val > 0 else 0.0
+
         db = get_db_manager()
         if db and hasattr(db, "get_price_at_interval_start"):
             try:
-                anchor = db.get_price_at_interval_start(symbol, duration)
-                start = float(anchor) if anchor is not None else None
+                raw_anchor = db.get_price_at_interval_start(symbol, duration)
             except DB_READ_FAILURES as e:
                 logger.debug("Database interval price lookup failed, falling back to buffer: %s", e)
-                start = None
-            if start is not None and start > 0:
-                change = current - start
-                return change, change / start * 100.0
+                raw_anchor = None
+            anchor_val = self._interval_anchor({duration: raw_anchor}, duration, fallback)
+            change = current - anchor_val
+            return change, (change / anchor_val * 100.0) if anchor_val > 0 else 0.0
         change = current - fallback
         return change, ((current - fallback) / fallback * 100.0) if fallback and fallback > 0 else 0.0
 
@@ -530,9 +607,13 @@ class MarketDataBuffer:
             if not rec:
                 return None
             current = rec["price"]
-            anchor = None
-            if hasattr(db, "get_price_at_interval_start"):
+            starts = self._interval_starts(symbol)
+            if duration in starts:
+                anchor = starts[duration]
+            elif hasattr(db, "get_price_at_interval_start"):
                 anchor = db.get_price_at_interval_start(symbol, duration)
+            else:
+                anchor = None
             start_p = self._interval_anchor({duration: anchor}, duration, float(rec["open"] or current))
             change = current - start_p
             return {
@@ -544,7 +625,7 @@ class MarketDataBuffer:
                 "low": round(rec["low"], 2),
                 "volume": round(rec["volume"], 2),
                 "lastUpdate": rec["time_str"],
-                **self._duration_stats(current, self._interval_starts(symbol), start_p),
+                **self._duration_stats(current, starts, start_p),
             }
         except DB_READ_FAILURES as e:
             logger.debug("Failed retrieving DB summary for %s: %s", symbol, e)
@@ -584,29 +665,31 @@ class MarketDataBuffer:
                     return db_summary
                 return self._empty_summary(symbol)
 
-            latest_tick = max(reversed(history), key=lambda t: t.timestamp)
-            earliest_tick = min(history, key=lambda t: t.timestamp)
+            latest_tick = history[-1]
+            earliest_tick = history[0]
             current = latest_tick.price
             open_price = self._open_prices.get(symbol, earliest_tick.price)
 
             # Per-duration changes, measured from the stored interval anchors.
-            dur_stats = self._duration_stats(current, self._interval_starts(symbol), open_price)
+            starts = self._interval_starts(symbol)
+            dur_stats = self._duration_stats(current, starts, open_price)
 
             # Change for the duration the caller asked about.
-            change, change_pct = self._change_for_duration(symbol, current, duration, open_price)
+            change, change_pct = self._change_for_duration(
+                symbol, current, duration, open_price, starts=starts
+            )
 
-            prices = [t.price for t in history if t.price > 0]
-            if not prices:
-                prices = [current]
-            total_vol = sum(t.size for t in history)
+            high_price = self._running_high.get(symbol, current)
+            low_price = self._running_low.get(symbol, current)
+            total_vol = self._running_volume.get(symbol, 0.0)
 
             result = {
                 "symbol": symbol,
                 "currentPrice": round(current, 2),
                 "change": round(change, 2),
                 "changePercent": round(change_pct, 2),
-                "high": round(max(prices), 2),
-                "low": round(min(prices), 2),
+                "high": round(high_price, 2),
+                "low": round(low_price, 2),
                 "volume": round(total_vol, 2),
                 "lastUpdate": hhmmss(latest_tick.timestamp)
             }
@@ -670,8 +753,10 @@ class DecisionBuffer:
     def get_history(self, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
         symbol = symbol.upper()
         with self._lock:
-            history = self._history.get(symbol, deque())
-            items = list(history)[-limit:]
+            history = self._history.get(symbol)
+            if not history or limit <= 0:
+                return []
+            items = list(itertools.islice(history, max(0, len(history) - limit), None))
             return [d.to_dict() for d in reversed(items)]
 
 
@@ -763,7 +848,9 @@ async def _query_historical_ticks_safe(
         return []
 
 
-def compute_recommendation(symbol: str) -> dict[str, Any]:
+def compute_recommendation(
+    symbol: str, summary: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Return the recorded decision for a symbol, or a momentum fallback.
 
     The fallback is what runs when nothing has been decided yet: it reads the
@@ -776,7 +863,7 @@ def compute_recommendation(symbol: str) -> dict[str, Any]:
     if latest:
         return latest.to_dict()
 
-    summary = market_buffer.get_summary(symbol)
+    summary = summary if summary is not None else market_buffer.get_summary(symbol)
     change = summary.get("changePercent", 0.0)
 
     # The band is the whole rule: outside it the direction of the move is the

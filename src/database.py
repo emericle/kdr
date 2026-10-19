@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+from bisect import bisect_left
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -406,6 +407,34 @@ class DatabaseManager:
             logger.error("Error writing market data to database: %s", e)
             self._rollback(session)
 
+    def _invalidate_interval_cache_for_bars(self, fresh: list[MarketDataModel]) -> None:
+        """Evict only interval-cache entries whose window a newly written bar falls in.
+
+        The cache key already carries ``minute_key(now_utc())``, which bounds
+        staleness to one minute. A live bar for the current minute sits at the
+        end of every interval window rather than its start boundary, so clearing
+        the whole cache on every write forced the 1 Hz dashboard broadcast to
+        miss the cache every minute. Only evict entries for the bar's symbol
+        when no anchor was cached yet or when an older/backfilled bar falls in
+        (or before) that duration's window.
+        """
+        if not self._interval_cache or not fresh:
+            return
+        now = now_utc()
+        current_min = minute_key(now)
+        for model in fresh:
+            sym = str(model.symbol or "").upper()
+            bar_ts = to_utc(model.timestamp) if model.timestamp is not None else now
+            is_backfill = minute_key(bar_ts) < current_min
+            for key, cached_val in list(self._interval_cache.items()):
+                cached_sym, dur, _ = key
+                if cached_sym != sym:
+                    continue
+                target_time, ref_end_time = interval_window(dur, now, now)
+                in_window = is_backfill and target_time <= bar_ts <= ref_end_time
+                if cached_val is None or in_window or bar_ts <= target_time:
+                    del self._interval_cache[key]
+
     def add_market_data(self, data: list[dict]) -> None:
         """Adds new market data records to the database in a single batched transaction.
 
@@ -424,9 +453,6 @@ class DatabaseManager:
             logger.warning("No session available")
             return
 
-        # A write invalidates the cached interval anchors.
-        self._interval_cache.clear()
-
         records: list[tuple] = []
         try:
             records, keys = self._prepare_bars(data)
@@ -439,6 +465,7 @@ class DatabaseManager:
 
             session.add_all(fresh)
             session.commit()
+            self._invalidate_interval_cache_for_bars(fresh)
             logger.info(
                 "Database commit successful: %d new of %d bars.", len(fresh), len(records)
             )
@@ -449,6 +476,7 @@ class DatabaseManager:
             self._rollback(session)
             for key, model in records:
                 self._write_bar(session, key, model)
+            self._invalidate_interval_cache_for_bars([model for _, model in records])
         except DB_FAILURES as e:
             logger.error("Error writing market data to database: %s", e)
             self._rollback(session)
@@ -482,6 +510,29 @@ class DatabaseManager:
             logger.error("Error checking stored bars: %s", e)
             return set()
 
+    @staticmethod
+    def _row_to_historical_dict(r: MarketDataModel) -> dict[str, Any]:
+        """Convert one ``MarketDataModel`` row to a dict with a single ``to_utc`` normalization."""
+        raw_ts = r.timestamp
+        if isinstance(raw_ts, datetime):
+            utc_ts = to_utc(raw_ts)
+            ts_val: Any = utc_ts.timestamp()
+            time_str = utc_ts.strftime("%H:%M:%S")
+        else:
+            ts_val = raw_ts
+            time_str = str(raw_ts)
+        return {
+            "symbol": r.symbol,
+            "timestamp": ts_val,
+            "price": float(r.close if r.close is not None else r.open or 0.0),
+            "open": float(r.open or 0.0),
+            "high": float(r.high or 0.0),
+            "low": float(r.low or 0.0),
+            "close": float(r.close or 0.0),
+            "volume": float(r.volume or 0.0),
+            "time_str": time_str,
+        }
+
     def get_historical_market_data(
         self,
         symbol: str,
@@ -509,20 +560,7 @@ class DatabaseManager:
             else:
                 records = query.order_by(MarketDataModel.timestamp.asc()).all()
 
-            return [
-                {
-                    "symbol": r.symbol,
-                    "timestamp": epoch_seconds(r.timestamp) if isinstance(r.timestamp, datetime) else r.timestamp,
-                    "price": float(r.close if r.close is not None else r.open or 0.0),
-                    "open": float(r.open or 0.0),
-                    "high": float(r.high or 0.0),
-                    "low": float(r.low or 0.0),
-                    "close": float(r.close or 0.0),
-                    "volume": float(r.volume or 0.0),
-                    "time_str": hhmmss(r.timestamp) if isinstance(r.timestamp, datetime) else str(r.timestamp)
-                }
-                for r in records
-            ]
+            return [self._row_to_historical_dict(r) for r in records]
         except DB_FAILURES as e:
             logger.error("Error retrieving historical market data for %s: %s", symbol, e)
             return []
@@ -676,10 +714,15 @@ class DatabaseManager:
                 return self._cache_missing_as_none(symbol_u, missing, minute, prices)
             latest_time = to_utc(latest.timestamp) if isinstance(latest.timestamp, datetime) else now_utc()
 
-            for duration in missing:
-                target_time, ref_end_time = interval_window(duration, now_utc(), latest_time)
-                prices[duration] = self._interval_price(session, symbol_u, target_time, ref_end_time)
-                self._interval_cache[(symbol_u, duration, minute)] = prices[duration]
+            now = now_utc()
+            windows = {
+                duration: interval_window(duration, now, latest_time)
+                for duration in missing
+            }
+            resolved = self._interval_prices_from_range(session, symbol_u, windows)
+            for duration, price in resolved.items():
+                prices[duration] = price
+                self._interval_cache[(symbol_u, duration, minute)] = price
             return prices
         except DB_FAILURES as e:
             logger.error(f"Error retrieving interval start prices for {symbol}: {e}")
@@ -687,29 +730,74 @@ class DatabaseManager:
         finally:
             self.connection.close(session)
 
+    @staticmethod
+    def _bar_open_price(row: MarketDataModel) -> float:
+        return float(row.open if row.open is not None else row.close or 0.0)
+
+    @staticmethod
+    def _bar_close_price(row: MarketDataModel) -> float:
+        return float(row.close if row.close is not None else row.open or 0.0)
+
+    def _interval_prices_from_range(
+        self,
+        session,
+        symbol: str,
+        windows: dict[str, tuple[datetime, datetime]],
+    ) -> dict[str, float | None]:
+        """Resolve all requested duration boundaries with one ascending range query + ``bisect``.
+
+        Instead of 1–3 queries per duration (7–19 round-trips for a cold symbol),
+        fetch all bars from ``min(target_time)`` ordered ascending in one query
+        and locate each duration's boundary in memory with :func:`bisect_left`.
+        """
+        min_target = min(target_time for target_time, _ in windows.values())
+        range_rows = (
+            session.query(MarketDataModel)
+            .filter(
+                MarketDataModel.symbol == symbol,
+                MarketDataModel.timestamp >= min_target,
+            )
+            .order_by(MarketDataModel.timestamp.asc())
+            .all()
+        )
+        timestamps = [to_utc(r.timestamp) for r in range_rows]
+
+        prev_before_min_loaded = False
+        prev_before_min: MarketDataModel | None = None
+        results: dict[str, float | None] = {}
+
+        for duration, (target_time, ref_end_time) in windows.items():
+            idx = bisect_left(timestamps, target_time)
+            if idx < len(range_rows) and timestamps[idx] <= ref_end_time:
+                results[duration] = self._bar_open_price(range_rows[idx])
+                continue
+            if idx > 0:
+                results[duration] = self._bar_close_price(range_rows[idx - 1])
+                continue
+            if not prev_before_min_loaded:
+                prev_before_min = (
+                    session.query(MarketDataModel)
+                    .filter(
+                        MarketDataModel.symbol == symbol,
+                        MarketDataModel.timestamp < min_target,
+                    )
+                    .order_by(MarketDataModel.timestamp.desc())
+                    .first()
+                )
+                prev_before_min_loaded = True
+            if prev_before_min is not None:
+                results[duration] = self._bar_close_price(prev_before_min)
+            elif range_rows:
+                results[duration] = self._bar_open_price(range_rows[0])
+            else:
+                results[duration] = None
+        return results
+
     def _interval_price(self, session, symbol: str, target_time: datetime, ref_end_time: datetime) -> float | None:
         """The price at or just after ``target_time``, then just before it, then the oldest."""
-        query = session.query(MarketDataModel).filter(
-            MarketDataModel.symbol == symbol,
-            MarketDataModel.timestamp >= target_time,
-            MarketDataModel.timestamp <= ref_end_time
-        ).order_by(MarketDataModel.timestamp.asc()).first()
-        if query:
-            return float(query.open if query.open is not None else query.close or 0.0)
-
-        prev = session.query(MarketDataModel).filter(
-            MarketDataModel.symbol == symbol,
-            MarketDataModel.timestamp < target_time
-        ).order_by(MarketDataModel.timestamp.desc()).first()
-        if prev:
-            return float(prev.close if prev.close is not None else prev.open or 0.0)
-
-        oldest = session.query(MarketDataModel).filter(
-            MarketDataModel.symbol == symbol
-        ).order_by(MarketDataModel.timestamp.asc()).first()
-        if oldest:
-            return float(oldest.open if oldest.open is not None else oldest.close or 0.0)
-        return None
+        return self._interval_prices_from_range(
+            session, symbol, {"_": (target_time, ref_end_time)}
+        )["_"]
 
 
     def get_model_weights(self, symbol: str):

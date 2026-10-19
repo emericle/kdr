@@ -1,6 +1,7 @@
 """Minute-bucketed tick buffer: the aggregation half of the pipeline."""
 import logging
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -19,9 +20,10 @@ class Tick:
 
 class DataStreamBuffer:
     """Thread-safe buffer to hold ticks for aggregation with O(1) running OHLCV state and integer buckets."""
-    def __init__(self):
-        # Nested dict: {symbol: {minute_string: [ticks]}}
-        self.buffer: dict[str, dict[str, list[dict]]] = {}
+    def __init__(self, max_ticks_per_minute: int = 1000):
+        self.max_ticks_per_minute = max_ticks_per_minute
+        # Nested dict: {symbol: {minute_string: deque[ticks]}}
+        self.buffer: dict[str, dict[str, deque[dict]]] = {}
         # Running OHLCV: {symbol: {minute_bucket_int: {"key": minute_string, "open": ...,
 # "high": ..., "low": ..., "close": ..., "volume": ...}}}
         self._running_bars: dict[str, dict[int, dict[str, Any]]] = {}
@@ -65,7 +67,7 @@ class DataStreamBuffer:
                     "close": price,
                     "volume": size
                 }
-                self.buffer[symbol][minute_key] = []
+                self.buffer[symbol][minute_key] = deque(maxlen=self.max_ticks_per_minute)
             else:
                 bar = self._running_bars[symbol][bucket]
                 minute_key = str(bar["key"])

@@ -809,6 +809,38 @@ class TestRotatingLogFile:
             for line in path.read_text().splitlines():
                 assert not line.startswith("logging.basicConfig"), (path, line)
 
+    def test_raw_ticks_capped_with_bounded_deque(self):
+        """DataStreamBuffer caps per-minute raw tick buckets with a bounded deque."""
+        from collections import deque
+
+        from src.data_buffer import DataStreamBuffer
+
+        buf = DataStreamBuffer(max_ticks_per_minute=50)
+        now = datetime.datetime(2026, 10, 15, 12, 0, tzinfo=datetime.UTC)
+        buf.add_tick("AAPL", {"price": 150.0, "size": 1.0, "timestamp": now})
+        bucket_deques = list(buf.buffer["AAPL"].values())
+        assert len(bucket_deques) == 1
+        assert isinstance(bucket_deques[0], deque)
+        assert bucket_deques[0].maxlen == 50
+
+    @patch("alpaca_trade_api.rest.REST")
+    def test_crypto_snapshot_reuses_cached_rest_client(self, mock_rest_cls):
+        """AlpacaStreamProcessor builds the REST client once and reuses it."""
+        mock_rest = MagicMock()
+        mock_rest.get_latest_crypto_trades.return_value = {}
+        mock_rest_cls.return_value = mock_rest
+
+        proc = AlpacaStreamProcessor(
+            api_key="k",
+            api_secret="s",
+            base_url="https://paper-api.alpaca.markets",
+            symbols=["BTC/USD"],
+        )
+        proc._fetch_crypto_snapshot()
+        proc._fetch_crypto_snapshot()
+        assert mock_rest_cls.call_count == 1
+        assert mock_rest.get_latest_crypto_trades.call_count == 2
+
 
 class TestRunWorkerThreads:
     """Tests for run_worker_threads function."""
