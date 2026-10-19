@@ -147,3 +147,61 @@ sudo systemctl restart cloudflared
    ```bash
    sudo journalctl -u cloudflared -f
    ```
+
+---
+
+## Database Upgrades & Data Retention Policy
+
+### Upgrading in Place (`bin/upgrade.sh`)
+
+Schema upgrades are managed by **Alembic** (`alembic.ini`, `alembic/env.py`, and
+versioned scripts in `alembic/versions/`). `DatabaseConnection.init_db()` runs
+`Base.metadata.create_all` only on a genuinely empty database (first run); once
+tables exist, schema evolution goes through Alembic migrations and never drops
+or recreates tables.
+
+To upgrade an existing deployment in place and restart the service:
+
+```bash
+./bin/upgrade.sh                 # Run `alembic upgrade head` and start/restart KDR
+./bin/upgrade.sh --migrate-only  # Apply migrations without starting the service
+./bin/check-database.sh          # Non-destructive connectivity & Alembic revision check
+```
+
+### Retention Policy (Keep-Forever by Default)
+
+- **Indefinite Retention:** `market_data`, `sentiment_data`, and `model_weights`
+  are kept indefinitely. No background job or startup path prunes historical
+  bars, and no code path drops or recreates a non-empty database. Any future
+  pruning mechanism must be strictly opt-in and default to keep-forever.
+- **Single Long-Lived Store on `pinky.local`:** The PostgreSQL database on
+  `pinky.local` is the single long-lived store for market history and trained
+  weights. Deploying the frontend and backend to the Raspberry Pi
+  (`bin/deploy_rpi4.sh`) syncs code and runs `alembic upgrade head` in place; it
+  never drops, resets, or overwrites the PostgreSQL store on `pinky.local`.
+- **Inspecting Table & Index Growth:** Because `market_data` carries a composite
+  unique index (`market_data_bar_unique` on `(symbol, timestamp)`) plus symbol
+  and timestamp indexes, monitor table and index growth with `psql`:
+
+  ```sql
+  -- Total relation size (table + toast + indexes), table heap size, and index size
+  SELECT
+      relname AS table_name,
+      pg_size_pretty(pg_total_relation_size(C.oid)) AS total_size,
+      pg_size_pretty(pg_table_size(C.oid)) AS table_size,
+      pg_size_pretty(pg_indexes_size(C.oid)) AS index_size,
+      reltuples::bigint AS estimated_rows
+  FROM pg_class C
+  LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
+  WHERE nspname = 'public'
+    AND relname IN ('market_data', 'sentiment_data', 'model_weights')
+  ORDER BY pg_total_relation_size(C.oid) DESC;
+
+  -- Individual index sizes on market_data
+  SELECT
+      indexrelname AS index_name,
+      pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
+  FROM pg_stat_user_indexes
+  WHERE relname = 'market_data'
+  ORDER BY pg_relation_size(indexrelid) DESC;
+  ```

@@ -120,6 +120,8 @@ rsync -avz --delete \
     --exclude="logs/*" \
     --exclude=".git" \
     "${KDR_ROOT}/src" \
+    "${KDR_ROOT}/alembic" \
+    "${KDR_ROOT}/alembic.ini" \
     "${KDR_ROOT}/requirements.txt" \
     "${KDR_ROOT}/bin" \
     "${TARGET_HOST}:${BACKEND_DIR}/"
@@ -165,6 +167,9 @@ echo "Using Python binary: $PYTHON_BIN"
 echo "Installing/updating dependencies..."
 .venv/bin/pip install --upgrade pip > /dev/null 2>&1
 .venv/bin/pip install -r requirements.txt
+
+echo "Applying in-place Alembic database migrations..."
+PYTHONPATH="." .venv/bin/python -m alembic -c alembic.ini upgrade head
 REMOTE_SETUP
 
 echo -e "${GREEN}✓ Python dependencies installed in virtual environment${NC}"
