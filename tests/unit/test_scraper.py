@@ -658,43 +658,14 @@ class TestDBWriterWorker:
         worker.running = False
         assert worker.running is False
 
-    def test_save_to_db_debug_mode(self):
-        """Test save_to_db is callable."""
+    def test_worker_has_no_dead_save_to_db_stub(self):
+        """DBWriterWorker persists via db_manager.add_market_data in run(); the dead save_to_db stub was removed."""
         mock_db = MagicMock()
         q = queue.Queue()
         mock_state_mapper = MagicMock()
         worker = DBWriterWorker(mock_db, mock_state_mapper, q)
 
-        bar_data = {
-            "symbol": "AAPL",
-            "price": 150.0,
-            "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
-        }
-
-        # Just ensure the method exists and can be called
-        worker.save_to_db("AAPL", bar_data)
-        assert True
-
-    def test_save_to_db_normal_mode(self):
-        """Test save_to_db in normal mode."""
-        mock_db = MagicMock()
-        q = queue.Queue()
-        mock_state_mapper = MagicMock()
-        worker = DBWriterWorker(mock_db, mock_state_mapper, q)
-
-        with patch('src.db_writer.logger') as mock_logger:
-            mock_logger.setLevel = MagicMock()
-
-            bar_data = {
-                "symbol": "AAPL",
-                "price": 150.0,
-                "timestamp": datetime.datetime(2023, 1, 1, 12, 0)
-            }
-
-            worker.save_to_db("AAPL", bar_data)
-
-            # Should not call debug in normal mode
-            assert mock_logger.debug.call_count == 0
+        assert not hasattr(worker, "save_to_db")
 
     def test_worker_run_processes_item_and_stops_on_sentinel(self):
         """Test DBWriterWorker.run executes, maps state, adds market data and terminates on None."""

@@ -1,6 +1,7 @@
 import datetime
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.database import DatabaseConnection, DatabaseManager, ModelWeightsModel, get_database_url
@@ -468,15 +469,24 @@ class TestNoHardcodedCredentials(unittest.TestCase):
 
     def test_database_source_contains_no_url_literal(self):
         import re
-        from pathlib import Path
         text = (Path(__file__).resolve().parents[2] / "src" / "database.py").read_text(encoding="utf-8")
         literals = re.findall(r'["\']postgresql://[^"\']*["\']', text)
         self.assertEqual(literals, [])
 
     def test_env_example_documents_the_qa_variable(self):
-        from pathlib import Path
         example = Path(__file__).resolve().parents[2] / ".env.example"
         self.assertIn("QA_DATABASE_URL", example.read_text(encoding="utf-8"))
+
+
+class TestCheckDatabaseScript(unittest.TestCase):
+    """bin/check-database.sh must use the real DatabaseConnection API."""
+
+    def test_check_database_script_uses_real_connection_api(self):
+        script = (Path(__file__).resolve().parents[2] / "bin" / "check-database.sh").read_text(encoding="utf-8")
+        self.assertNotIn("get_engine", script)
+        self.assertIn("db.connection.engine", script)
+        self.assertIn("db.connection.get_session()", script)
+        self.assertIn("except DB_FAILURES", script)
 
 
 if __name__ == '__main__':
