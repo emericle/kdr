@@ -48,6 +48,9 @@ def live_server(live_database):
 def clean_buffers():
     market_buffer._history.clear()
     market_buffer._open_prices.clear()
+    market_buffer._running_volume.clear()
+    market_buffer._running_high.clear()
+    market_buffer._running_low.clear()
     decision_buffer._history.clear()
     return
 
@@ -967,4 +970,176 @@ class TestDecisionHistoryFiltering:
         assert len(history) == 2
 
 
-# Add more tests as needed for additional edge cases and scenarios
+class TestHotPathOptimizations:
+    """Tests for Phase Perf hot-path optimizations in api_layer and data_layer."""
+
+    def test_get_summary_reuses_batched_starts_without_extra_query(self):
+        """get_summary should reuse starts from get_prices_at_interval_starts."""
+        import src.web_server.data_layer as data_layer
+
+        mock_db = MagicMock()
+        mock_db.get_prices_at_interval_starts.return_value = {
+            "1h": 98.0,
+            "24h": 95.0,
+            "5d": 90.0,
+            "30d": 85.0,
+            "1y": 80.0,
+            "ytd": 88.0,
+        }
+        mock_db.get_price_at_interval_start = MagicMock(return_value=95.0)
+
+        with patch.object(data_layer, "get_db_manager", return_value=mock_db):
+            market_buffer.add_tick("AAPL", 100.0, 50.0)
+            summary = market_buffer.get_summary("AAPL", duration="24h")
+
+        assert summary["change"] == 5.0
+        assert summary["changePercent"] == round(5.0 / 95.0 * 100.0, 2)
+        mock_db.get_prices_at_interval_starts.assert_called_once_with("AAPL")
+        mock_db.get_price_at_interval_start.assert_not_called()
+
+    def test_compute_recommendation_uses_provided_summary(self):
+        """compute_recommendation should use the provided summary without calling get_summary."""
+        precomputed = {"symbol": "FAST", "currentPrice": 110.0, "changePercent": 2.5}
+        with patch.object(market_buffer, "get_summary") as mock_get_summary:
+            rec = compute_recommendation("FAST", summary=precomputed)
+            mock_get_summary.assert_not_called()
+
+        assert rec["symbol"] == "FAST"
+        assert rec["action"] == "BUY"
+        assert rec["confidence"] > 0.65
+
+    @pytest.mark.asyncio
+    async def test_broadcast_loop_bails_when_no_active_connections(self):
+        """broadcast_loop should skip summary/recommendation work when active_connections is empty."""
+        import src.web_server.api_layer as api_layer
+
+        api_layer.manager.active_connections.clear()
+        market_buffer.add_tick("AAPL", 180.0, 100.0)
+
+        with (
+            patch.object(market_buffer, "get_symbols") as mock_get_symbols,
+            patch.object(market_buffer, "get_summary") as mock_get_summary,
+            patch(
+                "src.web_server.api_layer.asyncio.sleep",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+        ):
+            await api_layer.broadcast_loop(interval=0.01)
+            mock_get_symbols.assert_not_called()
+            mock_get_summary.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_loop_passes_summary_to_compute_recommendation(self):
+        """broadcast_loop should compute summary once per symbol and pass it to compute_recommendation."""
+        import src.web_server.api_layer as api_layer
+
+        mock_ws = AsyncMock()
+        api_layer.manager.active_connections.clear()
+        api_layer.manager.active_connections.add(mock_ws)
+        market_buffer.add_tick("AAPL", 180.0, 100.0)
+
+        try:
+            with (
+                patch.object(
+                    market_buffer, "get_summary", wraps=market_buffer.get_summary
+                ) as spy_summary,
+                patch(
+                    "src.web_server.api_layer.compute_recommendation",
+                    wraps=compute_recommendation,
+                ) as spy_rec,
+                patch(
+                    "src.web_server.api_layer.asyncio.sleep",
+                    new=AsyncMock(side_effect=asyncio.CancelledError),
+                ),
+            ):
+                await api_layer.broadcast_loop(interval=0.01)
+                assert spy_summary.call_count == 1
+                assert spy_rec.call_count == 1
+                assert "summary" in spy_rec.call_args.kwargs
+                assert spy_rec.call_args.kwargs["summary"]["symbol"] == "AAPL"
+        finally:
+            api_layer.manager.active_connections.clear()
+
+    def test_merge_ticks_linear_two_pointer_and_deduplication(self):
+        """_merge_ticks merges sorted lists linearly and deduplicates matching (round(ts, 2), price)."""
+        from src.web_server.api_layer import _merge_ticks
+
+        historical = [
+            {"timestamp": 100.0, "price": 10.0, "source": "db"},
+            {"timestamp": 200.0, "price": 20.0, "source": "db"},
+            {"timestamp": 300.0, "price": 30.0, "source": "db"},
+        ]
+        buffered = [
+            {"timestamp": 200.0, "price": 20.0, "source": "buf"},
+            {"timestamp": 400.0, "price": 40.0, "source": "buf"},
+        ]
+
+        merged = _merge_ticks(historical, buffered, limit=None)
+        assert [t["timestamp"] for t in merged] == [100.0, 200.0, 300.0, 400.0]
+
+        # Limit trims to most recent ticks
+        limited = _merge_ticks(historical, buffered, limit=2)
+        assert [t["timestamp"] for t in limited] == [300.0, 400.0]
+
+        # Fallback sort when an input is unsorted
+        unsorted_hist = [
+            {"timestamp": 300.0, "price": 30.0},
+            {"timestamp": 100.0, "price": 10.0},
+        ]
+        merged_unsorted = _merge_ticks(unsorted_hist, buffered, limit=None)
+        assert [t["timestamp"] for t in merged_unsorted] == [100.0, 200.0, 300.0, 400.0]
+
+    def test_running_high_low_volume_and_eviction(self):
+        """MarketDataBuffer maintains running high/low/volume across appends, evictions, and out-of-order ticks."""
+        from src.web_server.data_layer import MarketDataBuffer
+
+        buf = MarketDataBuffer(max_ticks=3)
+        buf.add_tick("SYM", 100.0, 10.0, timestamp=1000.0)
+        buf.add_tick("SYM", 90.0, 5.0, timestamp=1001.0)
+        buf.add_tick("SYM", 120.0, 20.0, timestamp=1002.0)
+
+        assert buf.get_latest_tick("SYM").price == 120.0
+        assert buf._history["SYM"][0].price == 100.0
+        assert buf._history["SYM"][1].price == 90.0
+        assert buf._history["SYM"][2].price == 120.0
+
+        summary = buf.get_summary("SYM")
+        assert summary["high"] == 120.0
+        assert summary["low"] == 90.0
+        assert summary["volume"] == 35.0
+
+        # Add 4th tick: evicts oldest (100.0, size 10.0); low (90.0) and high (120.0) remain
+        buf.add_tick("SYM", 110.0, 15.0, timestamp=1003.0)
+        summary2 = buf.get_summary("SYM")
+        assert summary2["high"] == 120.0
+        assert summary2["low"] == 90.0
+        assert summary2["volume"] == 40.0
+
+        # Add 5th tick: evicts 90.0 (which was the running low); low recomputes to 105.0
+        buf.add_tick("SYM", 105.0, 10.0, timestamp=1004.0)
+        summary3 = buf.get_summary("SYM")
+        assert summary3["high"] == 120.0
+        assert summary3["low"] == 105.0
+        assert summary3["volume"] == 45.0
+
+    def test_dashboard_html_cached_at_import(self):
+        """Dashboard HTML is cached at import so serving it does not re-open the file."""
+        import src.web_server.api_layer as api_layer
+
+        assert api_layer._DASHBOARD_HTML is not None
+        with patch("builtins.open", wraps=open) as spy_open:
+            first = api_layer._get_html_content(
+                api_layer.STATIC_HTML_PATH,
+                api_layer._DASHBOARD_HTML,
+                api_layer._DASHBOARD_HTML_SOURCE_PATH,
+            )
+            second = api_layer._get_html_content(
+                api_layer.STATIC_HTML_PATH,
+                api_layer._DASHBOARD_HTML,
+                api_layer._DASHBOARD_HTML_SOURCE_PATH,
+            )
+
+        assert first is not None
+        assert first == second
+        assert spy_open.call_count == 0
+

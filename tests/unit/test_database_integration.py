@@ -453,6 +453,55 @@ def contract_writes_invalidate_interval_cache(db: DatabaseManager, symbol: str) 
         )
 
 
+def contract_interval_batching_query_count_and_live_write_cache(
+    db: DatabaseManager, symbol: str
+) -> None:
+    """All six durations cost at most 2 SELECTs, and a current-minute write keeps the cache."""
+    from sqlalchemy import event
+
+    db.add_market_data(_interval_bars(symbol))
+    db._interval_cache.clear()
+
+    selects: list[str] = []
+
+    def _count_select(_conn, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    engine = db.connection.engine
+    event.listen(engine, "before_cursor_execute", _count_select)
+    try:
+        res = db.get_prices_at_interval_starts(symbol)
+        if len(res) != 6 or any(v is None for v in res.values()):
+            raise AssertionError(f"expected 6 populated interval prices, got {res}")
+        if len(selects) > 2:
+            raise AssertionError(f"expected at most 2 SELECT queries, got {len(selects)}")
+
+        # Writing a bar in the current minute must NOT evict cached non-None entries.
+        selects.clear()
+        db.add_market_data(
+            [
+                {
+                    "symbol": symbol,
+                    "timestamp": now_utc(),
+                    "open": 501.0,
+                    "high": 502.0,
+                    "low": 500.0,
+                    "close": 501.5,
+                    "volume": 10.0,
+                }
+            ]
+        )
+        selects.clear()
+        cached_res = db.get_prices_at_interval_starts(symbol)
+        if cached_res != res or len(selects) != 0:
+            raise AssertionError(
+                f"expected 0 SELECTs from preserved cache after current-minute write, got {len(selects)}"
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", _count_select)
+
+
 def _seed_old_schema_bars(engine, symbol: str) -> tuple[datetime.datetime, datetime.datetime]:
     """Boot revision 0001 and insert two pre-volume bars."""
     rev = upgrade_db(engine=engine, revision="0001_initial_schema")
@@ -628,6 +677,9 @@ class TestSqliteContract(unittest.TestCase):
 
     def test_writes_invalidate_interval_cache(self):
         contract_writes_invalidate_interval_cache(self.db, self.symbol)
+
+    def test_interval_batching_query_count_and_live_write_cache(self):
+        contract_interval_batching_query_count_and_live_write_cache(self.db, self.symbol)
 
     def test_migration_preserves_bars_and_adds_missing_columns(self):
         contract_migration_preserves_bars_and_adds_missing_columns(self.symbol)
