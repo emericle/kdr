@@ -479,13 +479,16 @@ class TestNoHardcodedCredentials(unittest.TestCase):
 
 
 class TestCheckDatabaseScript(unittest.TestCase):
-    """bin/check-database.sh must use the real DatabaseConnection API."""
+    """bin/check-database.sh must use the real DatabaseConnection API and stay non-destructive."""
 
     def test_check_database_script_uses_real_connection_api(self):
         script = (Path(__file__).resolve().parents[2] / "bin" / "check-database.sh").read_text(encoding="utf-8")
         self.assertNotIn("get_engine", script)
+        self.assertNotIn("init_db()", script)
         self.assertIn("db.connection.engine", script)
         self.assertIn("db.connection.get_session()", script)
+        self.assertIn("current_alembic_revision", script)
+        self.assertIn("schema_mismatches", script)
         self.assertIn("except DB_FAILURES", script)
 
 

@@ -38,14 +38,16 @@ $PYTHON_CMD -c "import psycopg2" 2>/dev/null || {
     print_warning "Run: $PYTHON_CMD -m pip install psycopg2-binary"
 }
 
-print_status "Testing database connection..."
+print_status "Testing database connection and inspecting schema..."
 PYTHONPATH="${PYTHONPATH:-}:${KDR_ROOT}" $PYTHON_CMD -c "
 import sys
 from sqlalchemy import text
 from src.database import (
     DB_FAILURES,
     DatabaseManager,
+    current_alembic_revision,
     get_database_url,
+    schema_mismatches,
 )
 
 url = get_database_url()
@@ -64,25 +66,23 @@ try:
         sys.exit(1)
     db.connection.close(session)
     print('✓ Database connection successful')
-    sys.exit(0)
 except DB_FAILURES as e:
     print(f'✗ Database connection failed: {e}')
     sys.exit(1)
-" || {
-    print_error "Database connection test failed."
-    print_error "Please check your DATABASE_URL and ensure PostgreSQL is running."
-    exit 1
-}
 
-# Create database tables if needed
-print_status "Setting up database schema..."
-PYTHONPATH="${PYTHONPATH:-}:${KDR_ROOT}" $PYTHON_CMD -c "
-from src.database import DatabaseManager
-db = DatabaseManager()
-db.connection.init_db()
-print('✓ Database tables created/verified')
+revision = current_alembic_revision(engine)
+print(f'✓ Current Alembic revision: {revision or \"unversioned\"}')
+
+mismatches = schema_mismatches(engine)
+if mismatches:
+    print('! Schema differs from models: ' + '; '.join(mismatches))
+    print('  Run ./bin/upgrade.sh (or alembic upgrade head) to migrate in place.')
+    sys.exit(2)
+
+print('✓ Database schema matches models (no tables modified)')
 " || {
-    print_error "Failed to create database tables."
+    print_error "Database check failed."
+    print_error "Verify DATABASE_URL in .env, ensure PostgreSQL is running, or run ./bin/upgrade.sh."
     exit 1
 }
 

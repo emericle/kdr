@@ -25,17 +25,21 @@ import os
 import unittest
 from unittest.mock import patch
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import DateTime, Float, String, column, create_engine, table, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from src.database import (
     INTERVAL_DURATIONS,
+    Base,
     DatabaseManager,
     MarketDataModel,
     ModelWeightsModel,
+    current_alembic_revision,
     get_database_url,
     now_utc,
+    schema_mismatches,
+    upgrade_db,
 )
 
 SQLITE_URL = "sqlite:///:memory:"
@@ -449,6 +453,117 @@ def contract_writes_invalidate_interval_cache(db: DatabaseManager, symbol: str) 
         )
 
 
+def _seed_old_schema_bars(engine, symbol: str) -> tuple[datetime.datetime, datetime.datetime]:
+    """Boot revision 0001 and insert two pre-volume bars."""
+    rev = upgrade_db(engine=engine, revision="0001_initial_schema")
+    if rev != "0001_initial_schema" or current_alembic_revision(engine) != "0001_initial_schema":
+        raise AssertionError(f"expected revision 0001_initial_schema, got {rev!r}")
+
+    t1 = datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.UTC)
+    t2 = datetime.datetime(2026, 10, 9, 13, 31, tzinfo=datetime.UTC)
+    old_market_data = table(
+        "market_data",
+        column("symbol", String),
+        column("timestamp", DateTime(timezone=True)),
+        column("open", Float),
+        column("high", Float),
+        column("low", Float),
+        column("close", Float),
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            old_market_data.insert(),
+            [
+                {"symbol": symbol, "timestamp": t1, "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.5},
+                {"symbol": symbol, "timestamp": t2, "open": 151.5, "high": 153.0, "low": 151.0, "close": 152.5},
+            ],
+        )
+    return t1, t2
+
+
+def contract_migration_preserves_bars_and_adds_missing_columns(symbol: str) -> None:
+    """Boot an old-schema DB with a few bars, migrate to head, and verify preservation.
+
+    This is the contract that proves 'migrate, don't reinstall':
+    1. A database starts at revision 0001 (where ``market_data`` has no ``volume``
+       column and no ``market_data_bar_unique`` index).
+    2. Bars are inserted into that old-schema ``market_data`` table.
+    3. ``init_db()`` refuses to call ``create_all`` once tables exist, detects the
+       missing ``volume`` column, and logs a warning pointing at ``alembic upgrade head``.
+    4. Running ``upgrade_db`` migrates the schema in place to ``head``: the prior
+       bars survive with their prices intact, the new ``volume`` column is present
+       and populated with ``0.0``, and subsequent duplicate bars are deduplicated.
+    """
+    db = DatabaseManager(db_url=SQLITE_URL)
+    engine = db.connection.engine
+    t1, _ = _seed_old_schema_bars(engine, symbol)
+
+    mismatches = schema_mismatches(engine)
+    if not any("volume" in m for m in mismatches):
+        raise AssertionError(f"expected missing 'volume' mismatch on 0001 schema, got {mismatches}")
+    if not any("market_data_bar_unique" in m for m in mismatches):
+        raise AssertionError(
+            f"expected missing 'market_data_bar_unique' mismatch on 0001 schema, got {mismatches}"
+        )
+
+    with patch.object(Base.metadata, "create_all") as mock_create_all:
+        if db.connection.init_db() or mock_create_all.called:
+            raise AssertionError("init_db() must fail and skip create_all on a mismatched schema")
+
+    head_rev = upgrade_db(engine=engine, revision="head")
+    if head_rev != "0002_market_data_volume_and_unique_index" or schema_mismatches(engine):
+        raise AssertionError(f"unexpected post-upgrade state: rev={head_rev!r}, mismatches={schema_mismatches(engine)}")
+
+    rows = db.get_historical_market_data(symbol)
+    if [r["close"] for r in rows] != [151.5, 152.5] or [r["volume"] for r in rows] != [0.0, 0.0]:
+        raise AssertionError(f"preserved bars or migrated volume column wrong: {rows}")
+
+    # And the unique index added by 0002 now skips duplicates on the migrated table.
+    db.add_market_data(
+        [
+            {
+                "symbol": symbol,
+                "timestamp": t1,
+                "open": 150.0,
+                "high": 152.0,
+                "low": 149.0,
+                "close": 151.5,
+                "volume": 99.0,
+            }
+        ]
+    )
+    if len(db.get_historical_market_data(symbol)) != 2:
+        raise AssertionError("migrated table did not enforce unique (symbol, timestamp)")
+
+
+def contract_init_db_skips_create_all_when_tables_exist(
+    db: DatabaseManager, symbol: str
+) -> None:
+    """Once tables exist, init_db() verifies the schema and never calls create_all."""
+    db.add_market_data(
+        [
+            {
+                "symbol": symbol,
+                "timestamp": datetime.datetime(2026, 10, 9, 13, 30, tzinfo=datetime.UTC),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 50.0,
+            }
+        ]
+    )
+    with patch.object(Base.metadata, "create_all") as mock_create_all:
+        ok = db.connection.init_db()
+        if not ok:
+            raise AssertionError("init_db() returned False on a valid existing schema")
+        if mock_create_all.called:
+            raise AssertionError("init_db() called create_all when tables already existed")
+    upgrade_db(engine=db.connection.engine, revision="head")
+    if len(db.get_historical_market_data(symbol)) != 1:
+        raise AssertionError("existing rows were lost across init_db() / upgrade_db()")
+
+
 # Opt in with USE_QA_DB / SKIP_DB_TEST, the same switches get_database_url reads.
 # The connection attempt only happens once opted in, so importing this module
 # never reaches out to a network.
@@ -514,6 +629,103 @@ class TestSqliteContract(unittest.TestCase):
     def test_writes_invalidate_interval_cache(self):
         contract_writes_invalidate_interval_cache(self.db, self.symbol)
 
+    def test_migration_preserves_bars_and_adds_missing_columns(self):
+        contract_migration_preserves_bars_and_adds_missing_columns(self.symbol)
+
+    def test_init_db_skips_create_all_when_tables_exist(self):
+        self.assertEqual(
+            current_alembic_revision(self.db.connection.engine),
+            "0002_market_data_volume_and_unique_index",
+        )
+        contract_init_db_skips_create_all_when_tables_exist(self.db, self.symbol)
+
+    def test_upgrade_and_check_database_scripts_preserve_data(self):
+        """bin/upgrade.sh --migrate-only and bin/check-database.sh migrate and verify a live DB file."""
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "upgrade_test.db"
+            db_url = f"sqlite:///{db_path}"
+
+            # Seed an old-schema (0001) SQLite file with one bar.
+            old_engine = create_engine(db_url)
+            upgrade_db(engine=old_engine, revision="0001_initial_schema")
+            with old_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO market_data (symbol, timestamp, open, high, low, close) "
+                        "VALUES ('AAPL', '2026-10-09 13:30:00+00:00', 100.0, 102.0, 99.0, 101.0)"
+                    )
+                )
+            old_engine.dispose()
+
+            env = {**os.environ, "DATABASE_URL": db_url}
+            env.pop("USE_QA_DB", None)
+            env.pop("SKIP_DB_TEST", None)
+
+            # Before upgrade, check-database.sh must detect the schema mismatch and exit non-zero
+            # without modifying or recreating the table.
+            pre_check = subprocess.run(
+                [str(repo_root / "bin" / "check-database.sh")],
+                cwd=str(repo_root),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertNotEqual(pre_check.returncode, 0, pre_check.stdout + pre_check.stderr)
+            self.assertIn("0001_initial_schema", pre_check.stdout)
+
+            # Run bin/upgrade.sh --migrate-only to migrate to head in place.
+            upg = subprocess.run(
+                [str(repo_root / "bin" / "upgrade.sh"), "--migrate-only"],
+                cwd=str(repo_root),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(upg.returncode, 0, upg.stdout + upg.stderr)
+
+            # Now check-database.sh succeeds and reports the head revision.
+            post_check = subprocess.run(
+                [str(repo_root / "bin" / "check-database.sh")],
+                cwd=str(repo_root),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertEqual(post_check.returncode, 0, post_check.stdout + post_check.stderr)
+            self.assertIn("0002_market_data_volume_and_unique_index", post_check.stdout)
+
+            # And the prior bar survived with volume populated as 0.0.
+            migrated_db = DatabaseManager(db_url=db_url)
+            rows = migrated_db.get_historical_market_data("AAPL")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["close"], 101.0)
+            self.assertEqual(rows[0]["volume"], 0.0)
+            migrated_db.connection.engine.dispose()
+
+    def test_no_code_path_drops_tables(self):
+        """Guardrail: no module in src/, bin/ or alembic/versions/ drops tables."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        forbidden = ("drop_all", "drop_table", "DROP TABLE")
+        checked_paths = (
+            list((repo_root / "src").rglob("*.py"))
+            + list((repo_root / "alembic" / "versions").rglob("*.py"))
+            + list((repo_root / "bin").rglob("*.sh"))
+        )
+        for path in checked_paths:
+            content = path.read_text(encoding="utf-8")
+            for token in forbidden:
+                self.assertNotIn(token, content, f"{path} contains forbidden destructive call {token!r}")
+
 
 class TestQaDatabaseContract(unittest.TestCase):
     """The same contract against the real postgres QA database."""
@@ -535,6 +747,7 @@ class TestQaDatabaseContract(unittest.TestCase):
             contract_duplicate_bars_are_skipped(db, SENTINEL_SYMBOL + "DUP")
             contract_interval_batching_matches_single_lookups(db, SENTINEL_SYMBOL + "INT")
             contract_writes_invalidate_interval_cache(db, SENTINEL_SYMBOL + "CACHE")
+            contract_init_db_skips_create_all_when_tables_exist(db, SENTINEL_SYMBOL + "INIT")
         finally:
             self._cleanup(db)
 

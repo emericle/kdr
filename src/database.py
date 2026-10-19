@@ -3,11 +3,23 @@ import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Text, create_engine
-from sqlalchemy.exc import DBAPIError, IntegrityError, InvalidRequestError
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    text,
+)
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import DBAPIError, IntegrityError, InvalidRequestError, NoInspectionAvailable
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import QueuePool
 
@@ -96,22 +108,164 @@ class DatabaseConnection:
             return self.session_factory()
         return None
 
-    def init_db(self):
-        """Initializes the database schema."""
-        if self.engine:
-            try:
-                logger.info("Initialising database tables...")
+    def init_db(self) -> bool:
+        """Bootstrap a genuinely empty database, or verify an existing schema.
+
+        ``Base.metadata.create_all`` runs only when none of the application's
+        tables exist yet (first run). Once tables exist, schema changes go
+        through versioned Alembic migrations (``alembic upgrade head`` /
+        ``./bin/upgrade.sh``), never through ``create_all`` and never through a
+        drop. When existing tables differ from the model schema, the mismatch is
+        logged and ``False`` is returned rather than silently doing nothing.
+        """
+        if not self.engine:
+            return False
+        try:
+            existing = _existing_model_tables(self.engine)
+            if not existing:
+                logger.info("Initialising database tables on empty database...")
                 Base.metadata.create_all(self.engine)
+                _stamp_alembic_head(self.engine)
                 logger.info("Database initialized successfully.")
-            except DB_FAILURES as e:
-                logger.warning(f"Notice: Database initialization skipped: {e}")
+                return True
 
+            mismatches = schema_mismatches(self.engine)
+            if mismatches:
+                logger.warning(
+                    "Database schema mismatch detected (%s). Run 'alembic upgrade head' "
+                    "(or ./bin/upgrade.sh) to migrate in place without losing data.",
+                    "; ".join(mismatches),
+                )
+                return False
 
+            logger.info("Existing database schema verified.")
+            return True
+        except DB_FAILURES as e:
+            logger.warning(f"Notice: Database initialization skipped: {e}")
+            return False
 
     def close(self, session):
         """Closes an active session."""
         if session:
             session.close()
+
+
+def _existing_model_tables(engine: Any) -> set[str]:
+    """Model table names that already exist in ``engine``."""
+    try:
+        inspector = sa_inspect(engine)
+    except (NoInspectionAvailable, AttributeError, TypeError):
+        return set()
+    return set(inspector.get_table_names()) & set(Base.metadata.tables)
+
+
+def schema_mismatches(engine: Any) -> list[str]:
+    """Differences between ``Base.metadata`` and the tables stored in ``engine``.
+
+    Returns an empty list when every model table, column, and named index is
+    present in the database.
+    """
+    try:
+        inspector = sa_inspect(engine)
+    except (NoInspectionAvailable, AttributeError, TypeError):
+        return []
+    present_tables = set(inspector.get_table_names())
+    mismatches: list[str] = []
+    for table_name in sorted(Base.metadata.tables):
+        if table_name not in present_tables:
+            mismatches.append(f"missing table '{table_name}'")
+            continue
+        table_obj = Base.metadata.tables[table_name]
+        stored_cols = {col["name"] for col in inspector.get_columns(table_name)}
+        expected_cols = {col.name for col in table_obj.columns}
+        missing_cols = sorted(expected_cols - stored_cols)
+        if missing_cols:
+            mismatches.append(
+                f"table '{table_name}' is missing columns: {', '.join(missing_cols)}"
+            )
+        stored_indexes = {
+            idx["name"] for idx in inspector.get_indexes(table_name) if idx.get("name")
+        }
+        expected_indexes = {idx.name for idx in table_obj.indexes if idx.name}
+        missing_indexes = sorted(expected_indexes - stored_indexes)
+        if missing_indexes:
+            mismatches.append(
+                f"table '{table_name}' is missing indexes: {', '.join(missing_indexes)}"
+            )
+    return mismatches
+
+
+def current_alembic_revision(engine: Any) -> str | None:
+    """Return the revision recorded in ``alembic_version``, or ``None`` if unversioned."""
+    try:
+        inspector = sa_inspect(engine)
+        if "alembic_version" not in set(inspector.get_table_names()):
+            return None
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).first()
+            return str(row[0]) if row and row[0] else None
+    except (*DB_FAILURES, NoInspectionAvailable, AttributeError, TypeError):
+        return None
+
+
+def _alembic_config() -> Any:
+    """Build an Alembic ``Config`` pointed at this repository's ``alembic/`` directory."""
+    from alembic.config import Config
+
+    repo_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(repo_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(repo_root / "alembic"))
+    return cfg
+
+
+def _stamp_alembic_head(engine: Any) -> None:
+    """Record the current Alembic head revision after bootstrapping an empty database."""
+    try:
+        sa_inspect(engine)
+    except (NoInspectionAvailable, AttributeError, TypeError):
+        return
+    try:
+        from alembic import command
+
+        cfg = _alembic_config()
+        with engine.begin() as conn:
+            cfg.attributes["connection"] = conn
+            command.stamp(cfg, "head")
+    except (*DB_FAILURES, NoInspectionAvailable, AttributeError, TypeError):
+        pass
+
+
+def upgrade_db(
+    db_url: str | None = None,
+    engine: Any | None = None,
+    revision: str = "head",
+) -> str | None:
+    """Run Alembic migrations up to ``revision`` in place without dropping data.
+
+    Accepts either a live SQLAlchemy ``engine`` (so in-memory SQLite tests
+    migrate the same connection that holds their seeded bars) or a database URL
+    resolved through :func:`get_database_url`.
+    """
+    from alembic import command
+
+    cfg = _alembic_config()
+
+    if engine is not None:
+        with engine.begin() as conn:
+            cfg.attributes["connection"] = conn
+            command.upgrade(cfg, revision)
+        return current_alembic_revision(engine)
+
+    resolved_url = get_database_url(db_url)
+    if not resolved_url:
+        raise RuntimeError("No database URL configured for upgrade_db.")
+    cfg.set_main_option("sqlalchemy.url", resolved_url)
+    command.upgrade(cfg, revision)
+    target_engine = create_engine(resolved_url)
+    try:
+        return current_alembic_revision(target_engine)
+    finally:
+        target_engine.dispose()
 
 # Base Model for SQLAlchemy 2.0+
 class Base(DeclarativeBase):
@@ -452,6 +606,32 @@ class DatabaseManager:
         """
         return self.get_prices_at_interval_starts(symbol, [duration]).get(duration)
 
+    def _read_cached_intervals(
+        self, symbol_u: str, wanted: list[str], minute: str
+    ) -> tuple[dict[str, float | None], list[str]]:
+        """Split ``wanted`` durations into already-cached values and missing ones."""
+        if minute != self._interval_cache_minute:
+            self._interval_cache.clear()
+            self._interval_cache_minute = minute
+
+        prices: dict[str, float | None] = {}
+        missing: list[str] = []
+        for duration in wanted:
+            key = (symbol_u, duration, minute)
+            if key in self._interval_cache:
+                prices[duration] = self._interval_cache[key]
+            else:
+                missing.append(duration)
+        return prices, missing
+
+    def _cache_missing_as_none(
+        self, symbol_u: str, missing: list[str], minute: str, prices: dict[str, float | None]
+    ) -> dict[str, float | None]:
+        for duration in missing:
+            prices[duration] = None
+            self._interval_cache[(symbol_u, duration, minute)] = None
+        return prices
+
     def get_prices_at_interval_starts(
         self,
         symbol: str,
@@ -480,18 +660,7 @@ class DatabaseManager:
         wanted = list(durations) if durations else list(INTERVAL_DURATIONS)
         symbol_u = symbol.upper()
         minute = minute_key(now_utc())
-        if minute != self._interval_cache_minute:
-            self._interval_cache.clear()
-            self._interval_cache_minute = minute
-
-        prices: dict[str, float | None] = {}
-        missing: list[str] = []
-        for duration in wanted:
-            key = (symbol_u, duration, minute)
-            if key in self._interval_cache:
-                prices[duration] = self._interval_cache[key]
-            else:
-                missing.append(duration)
+        prices, missing = self._read_cached_intervals(symbol_u, wanted, minute)
         if not missing:
             return prices
 
@@ -504,24 +673,17 @@ class DatabaseManager:
                 MarketDataModel.symbol == symbol_u
             ).order_by(MarketDataModel.timestamp.desc()).first()
             if not latest:
-                for duration in missing:
-                    prices[duration] = None
-                    self._interval_cache[(symbol_u, duration, minute)] = None
-                return prices
+                return self._cache_missing_as_none(symbol_u, missing, minute, prices)
             latest_time = to_utc(latest.timestamp) if isinstance(latest.timestamp, datetime) else now_utc()
 
             for duration in missing:
                 target_time, ref_end_time = interval_window(duration, now_utc(), latest_time)
                 prices[duration] = self._interval_price(session, symbol_u, target_time, ref_end_time)
-                key = (symbol_u, duration, minute)
-                self._interval_cache[key] = prices[duration]
+                self._interval_cache[(symbol_u, duration, minute)] = prices[duration]
             return prices
         except DB_FAILURES as e:
             logger.error(f"Error retrieving interval start prices for {symbol}: {e}")
-            for duration in missing:
-                prices[duration] = None
-                self._interval_cache[(symbol_u, duration, minute)] = None
-            return prices
+            return self._cache_missing_as_none(symbol_u, missing, minute, prices)
         finally:
             self.connection.close(session)
 

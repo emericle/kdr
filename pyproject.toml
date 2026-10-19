@@ -38,6 +38,7 @@ ignore = ["E402", "PT009", "PT011", "PT027", "SIM105", "UP036"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
+known-third-party = ["alembic"]
 
 [tool.mypy]
 python_version = "3.13"

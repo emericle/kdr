@@ -60,7 +60,7 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-### 3. Database Initialization
+### 3. Database Initialization & Upgrades
 
 Ensure PostgreSQL is running and create the database:
 
@@ -70,7 +70,18 @@ createdb kdr_db
 psql -U postgres -c "CREATE DATABASE kdr_db;"
 ```
 
-Tables are automatically initialized on startup via `db_manager.connection.init_db()`.
+On a genuinely empty database (first run), `db_manager.connection.init_db()` bootstraps the schema and stamps the current Alembic head. Once tables exist, schema changes go through versioned **Alembic** migrations (`alembic/`) and never drop or recreate tables:
+
+```bash
+# Migrate database schema to Alembic head in place and start/restart KDR
+./bin/upgrade.sh
+
+# Apply Alembic migrations only (without starting the service)
+./bin/upgrade.sh --migrate-only
+
+# Verify database connectivity, current Alembic revision, and schema match (non-destructive)
+./bin/check-database.sh
+```
 
 ---
 
@@ -230,6 +241,12 @@ Use the helper scripts in `bin/` to manage background execution:
 # Start pipeline in the background
 ./bin/local-start.sh
 
+# Migrate database to Alembic head in place, then start/restart service
+./bin/upgrade.sh
+
+# Check database connectivity and current Alembic revision (non-destructive)
+./bin/check-database.sh
+
 # Monitor background logs
 tail -f logs/kdr.log
 
@@ -343,11 +360,15 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 ## Directory Structure
 
 ```text
-├── bin/                 # Process management and deployment scripts (start.sh, daemon.sh, deploy_rpi4.sh)
-│   └── _start_common.sh # The one start/stop library the four entry scripts source
+├── alembic/             # Versioned Alembic schema migrations (bound to src.database.Base.metadata)
+│   ├── env.py           # Migration environment reading DATABASE_URL via get_database_url()
+│   └── versions/        # Reproducible, non-destructive migration scripts
+├── alembic.ini          # Alembic CLI configuration (no hardcoded credentials)
+├── bin/                 # Process management, upgrade, and deployment scripts (start.sh, upgrade.sh, check-database.sh, daemon.sh, deploy_rpi4.sh)
+│   └── _start_common.sh # The one start/stop library the entry scripts source
 ├── docs/                # Architecture, deployment, and specification documentation
 │   ├── architecture.md  # Detailed system architecture and component designs
-│   ├── deployment.md    # Nginx reverse proxy and Cloudflare Tunnel setup
+│   ├── deployment.md    # Nginx reverse proxy, Cloudflare Tunnel, upgrades, and retention policy
 │   ├── plans/           # Work-in-progress improvement plans and TODO checklists
 │   └── specs/           # Feature specifications (Bellman decision model)
 ├── src/                 # Core engine source code
@@ -360,7 +381,7 @@ remain sit at thread and process boundaries and each carries a comment saying wh
 │   ├── data_buffer.py   # Minute-bucketed tick aggregation (DataStreamBuffer)
 │   ├── db_writer.py     # Queue draining, DBWriterWorker, run_worker_threads, live decisions
 │   ├── logging_config.py # The one logging configuration (rotating logs/kdr.log)
-│   ├── database.py      # SQLAlchemy persistence and stored weights
+│   ├── database.py      # SQLAlchemy persistence, stored weights, and Alembic schema checks/upgrades
 │   ├── state_mapper.py  # Tick/bar → domain states, incl. the state the model decides on
 │   ├── sentiment_adapter.py # Adanos sentiment integration
 │   ├── web_server/      # FastAPI REST & WebSocket server, as a package
