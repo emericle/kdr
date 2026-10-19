@@ -12,10 +12,12 @@ from src.web_server import (
     TradingDecision,
     compute_recommendation,
     decision_buffer,
+    index_store,
     market_buffer,
     start_web_server_thread,
     stop_web_server,
 )
+from src.web_server.data_layer import DEFAULT_INDEXES
 
 TEST_PORT = 8099
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
@@ -52,6 +54,8 @@ def clean_buffers():
     market_buffer._running_high.clear()
     market_buffer._running_low.clear()
     decision_buffer._history.clear()
+    index_store._indexes = {k: dict(v) for k, v in DEFAULT_INDEXES.items()}
+    index_store._dirty = False
     return
 
 
@@ -650,11 +654,13 @@ class TestMarketIndexTracking:
             data = await get_market_index("SP500")
             assert isinstance(data, dict)
             assert data["index"] == "SP500"
-            assert data["currentPrice"] > 0
+            assert data["currentPrice"] is None
+            assert data["priceType"] == "placeholder"
 
             all_data = await get_all_market_indexes()
             assert isinstance(all_data, list)
             assert len(all_data) == 5
+            assert all(item["currentPrice"] is None and item["priceType"] == "placeholder" for item in all_data)
 
             # Historical database queries should never be called for index summaries
             mock_db.get_price_at_interval_start.assert_not_called()
@@ -663,13 +669,29 @@ class TestMarketIndexTracking:
 
     @pytest.mark.asyncio
     async def test_index_valuations_never_zero_when_closed(self):
-        """Verify that all tracked indexes have non-zero valuations even if markets closed/no ticks."""
-        from src.web_server import TRACKED_INDEXES, get_all_market_indexes
+        """Verify cold indexes report honest placeholder state and transition to live once a tick arrives."""
+        from src.web_server import TRACKED_INDEXES, get_all_market_indexes, market_buffer
         indexes = await get_all_market_indexes()
         assert len(indexes) == len(TRACKED_INDEXES)
         for idx in indexes:
-            assert idx["currentPrice"] > 0, f"Index {idx['index']} has 0 price"
-            assert idx["lastUpdate"] is not None
+            assert idx["currentPrice"] is None, f"Cold index {idx['index']} should have None price"
+            assert idx["priceType"] == "placeholder"
+            assert idx["lastUpdate"] is None
+
+        # Once a tick arrives, the index transitions from placeholder to live
+        market_buffer.add_tick("SP500", 5850.0, 100.0)
+        updated = await get_all_market_indexes()
+        sp500 = next(i for i in updated if i["index"] == "SP500")
+        assert sp500["currentPrice"] == 5850.0
+        assert sp500["priceType"] == "live"
+        assert sp500["lastUpdate"] is not None
+
+        # Clearing live buffer while store retains valuation reports closing price
+        market_buffer._history.clear()
+        closed = await get_all_market_indexes()
+        sp500_closed = next(i for i in closed if i["index"] == "SP500")
+        assert sp500_closed["currentPrice"] == 5850.0
+        assert sp500_closed["priceType"] == "closing"
 
 
 class TestDashboardHTMLFeatures:
@@ -719,19 +741,21 @@ class TestDashboardHTMLFeatures:
         assert "id=\"tickChart\"" in html
         # Check for chart-related CSS classes
         assert ".canvas-wrap" in html
-        assert "height: 380px" in html
+        assert "clamp(220px, 45vh, 380px)" in html
         # Check for chart initialization in Vue
         assert "initChart()" in html
         assert "tickChart" in html
 
     def test_dashboard_has_moving_average_checkboxes(self, live_server):
-        """Verify 200-Day and 50-Day moving average checkboxes are present."""
+        """Verify 200-Tick and 50-Tick moving average checkboxes are present."""
         resp = requests.get(f"{BASE_URL}/", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         html = resp.text
-        # Check for checkboxes
-        assert '200-Day' in html
-        assert '50-Day' in html
+        # Check for checkboxes with honest window labels
+        assert "200-Tick MA" in html
+        assert "50-Tick MA" in html
+        assert "200-Day" not in html
+        assert "50-Day" not in html
         # Check for checkbox styling
         assert 'checkbox-label' in html
         # Check for Vue binding
@@ -1142,4 +1166,96 @@ class TestHotPathOptimizations:
         assert first is not None
         assert first == second
         assert spy_open.call_count == 0
+
+    def test_moving_average_returns_none_when_fewer_points_than_window(self):
+        """_moving_average returns None when len(prices) < window and computes mean when >= window."""
+        from src.web_server.api_layer import _moving_average
+
+        assert _moving_average([], 50) is None
+        assert _moving_average([100.0, 102.0, 104.0], 50) is None
+        assert _moving_average([10.0, 20.0, 30.0], 3) == 20.0
+        assert _moving_average([5.0, 10.0, 20.0, 30.0], 3) == 20.0
+
+    def test_get_summary_use_db_false_never_queries_database(self):
+        """get_summary(..., use_db=False) never touches the database whether buffer is empty or populated."""
+        import src.web_server.data_layer as data_layer
+
+        with patch.object(data_layer, "get_db_manager") as mock_get_db:
+            # Cold symbol with empty buffer
+            cold = market_buffer.get_summary("COLD_SYM", use_db=False)
+            assert cold["symbol"] == "COLD_SYM"
+            assert cold["currentPrice"] == 0.0
+            mock_get_db.assert_not_called()
+
+            # Populated symbol in buffer
+            market_buffer.add_tick("WARM_SYM", 100.0, 10.0)
+            market_buffer.add_tick("WARM_SYM", 110.0, 15.0)
+            warm = market_buffer.get_summary("WARM_SYM", use_db=False)
+            assert warm["symbol"] == "WARM_SYM"
+            assert warm["currentPrice"] == 110.0
+            assert warm["change"] == 10.0
+            assert warm["changePercent"] == 10.0
+            assert warm["change24h"] == 10.0
+            assert warm["changePercent24h"] == 10.0
+            mock_get_db.assert_not_called()
+
+    def test_index_store_skips_writing_placeholders_to_disk(self, tmp_path):
+        """IndexStore does not persist placeholder entries to index_cache.json."""
+        import json
+
+        from src.web_server.data_layer import IndexStore
+
+        cache_file = str(tmp_path / "no_placeholders.json")
+        store = IndexStore(cache_file=cache_file, flush_interval=60.0)
+        store.flush_cache(force=True)
+
+        with open(cache_file, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data == {}
+
+    @pytest.mark.asyncio
+    async def test_websocket_endpoint_sends_buffer_only_init_before_db_read(self):
+        """websocket_endpoint sends a buffer-only init frame (use_db=False) before querying DB."""
+        from fastapi import WebSocketDisconnect
+
+        import src.web_server.api_layer as api_layer
+        import src.web_server.data_layer as data_layer
+
+        market_buffer.add_tick("AAPL", 180.0, 100.0)
+        market_buffer.add_tick("AAPL", 185.0, 50.0)
+
+        events: list[str] = []
+        sent_frames: list[dict] = []
+
+        mock_ws = AsyncMock()
+
+        async def record_send_json(payload):
+            events.append(f"send:{payload['type']}")
+            sent_frames.append(payload)
+
+        mock_ws.send_json = AsyncMock(side_effect=record_send_json)
+        mock_ws.receive_text = AsyncMock(side_effect=WebSocketDisconnect())
+
+        orig_get_summary = market_buffer.get_summary
+
+        def spy_get_summary(symbol, duration="24h", use_db=True):
+            events.append(f"get_summary:use_db={use_db}")
+            return orig_get_summary(symbol, duration=duration, use_db=use_db)
+
+        mock_db = MagicMock()
+        mock_db.get_prices_at_interval_starts.return_value = {"24h": 175.0}
+
+        with (
+            patch.object(market_buffer, "get_summary", side_effect=spy_get_summary),
+            patch.object(data_layer, "get_db_manager", return_value=mock_db),
+        ):
+            await api_layer.websocket_endpoint(mock_ws)
+
+        assert events[:2] == ["get_summary:use_db=False", "send:init"]
+        assert sent_frames[0]["type"] == "init"
+        assert sent_frames[0]["symbols"][0]["change"] == 5.0
+        assert sent_frames[1]["type"] == "update"
+        assert sent_frames[1]["symbols"][0]["change"] == 10.0
+
+
 

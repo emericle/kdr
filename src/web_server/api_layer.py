@@ -15,15 +15,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import src.web_server.data_layer as data_layer
 from src.times import epoch_seconds, hhmmss, now_utc
 from src.web_server.data_layer import (
-    INDEX_CANDIDATE_SYMBOLS,
-    INDEX_DISPLAY_NAMES,
-    INDEX_TICKERS,
-    TRACKED_INDEXES,
     _query_historical_ticks_safe,
     compute_recommendation,
     decision_buffer,
+    fetch_tracked_indexes,
     index_store,
     market_buffer,
+    resolve_market_index,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,64 +225,9 @@ async def get_symbols():
 async def get_market_index(index: str) -> dict[str, Any]:
     """
     Returns market index data for specific indices.
-    Data is persisted so valuations are never $0.00 when markets are closed.
     Fast retrieval without historical database lookups.
     """
-    index = index.upper()
-    display_name = INDEX_DISPLAY_NAMES.get(index, index)
-    ticker = INDEX_TICKERS.get(index, index)
-    clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
-    candidates = INDEX_CANDIDATE_SYMBOLS.get(index, [index, clean_ticker])
-
-    # Check live in-memory buffer ONLY (fast, non-blocking, no historical DB query)
-    for sym in candidates:
-        tick = market_buffer.get_latest_tick(sym)
-        if tick and tick.price > 0:
-            open_p = market_buffer._open_prices.get(sym.upper(), tick.price)
-            change = tick.price - open_p if open_p > 0 else 0.0
-            change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
-            time_str = hhmmss(tick.timestamp)
-            index_store.update_index(
-                index=index,
-                current_price=tick.price,
-                change=change,
-                change_percent=change_pct,
-                last_update=time_str,
-                price_type="live"
-            )
-            break
-
-    # Return persisted latest value - fast, non-blocking, never 0.00
-    res = index_store.get_index(index)
-    res["displayName"] = display_name
-    res["ticker"] = clean_ticker
-    return res
-
-
-async def fetch_tracked_indexes() -> list[dict[str, Any]]:
-    """Fetch data for all tracked market indices from persistent store (never $0.00).
-    Uses fast in-memory checks without historical database lookups.
-    """
-    for idx in TRACKED_INDEXES:
-        candidates = INDEX_CANDIDATE_SYMBOLS.get(idx, [idx])
-        for sym in candidates:
-            # Check live in-memory buffer ONLY (no historical DB lookup)
-            tick = market_buffer.get_latest_tick(sym)
-            if tick and tick.price > 0:
-                open_p = market_buffer._open_prices.get(sym.upper(), tick.price)
-                change = tick.price - open_p if open_p > 0 else 0.0
-                change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
-                time_str = hhmmss(tick.timestamp)
-                index_store.update_index(
-                    index=idx,
-                    current_price=tick.price,
-                    change=change,
-                    change_percent=change_pct,
-                    last_update=time_str,
-                    price_type="live"
-                )
-                break
-    return index_store.get_all(TRACKED_INDEXES)
+    return resolve_market_index(index)
 
 
 @app.get("/api/market-indexes")
@@ -381,11 +324,11 @@ def _merge_ticks(
     return merged
 
 
-def _moving_average(prices: list[float], window: int) -> float:
-    """Mean of the last ``window`` prices, or the last price when there are fewer."""
-    if len(prices) >= window:
-        return round(sum(prices[-window:]) / float(window), 2)
-    return prices[-1] if prices else 0.0
+def _moving_average(prices: list[float], window: int) -> float | None:
+    """Mean of the last ``window`` prices, or ``None`` when there are fewer than ``window`` points."""
+    if window <= 0 or len(prices) < window:
+        return None
+    return round(sum(prices[-window:]) / float(window), 2)
 
 
 @app.get("/api/symbols/{symbol}")
@@ -447,6 +390,21 @@ async def get_symbol_detail(
     })
 
 
+def _build_ws_summaries_and_decisions(
+    symbols: list[str], use_db: bool
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    summaries: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
+    for sym in symbols:
+        s = market_buffer.get_summary(sym, use_db=use_db)
+        r = compute_recommendation(sym, summary=s)
+        s["recommendation"] = r["action"]
+        s["confidence"] = r["confidence"]
+        summaries.append(s)
+        decisions.append(r)
+    return summaries, decisions
+
+
 @app.websocket("/ws")
 @app.websocket("/ws/updates")
 async def websocket_endpoint(websocket: WebSocket):
@@ -454,20 +412,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket, register=False)
     try:
         logger.info("WebSocket connection accepted, preparing initial state")
-        # Immediately send current state upon connection
+        # Immediately send buffer-only current state upon connection so first paint never blocks on DB reads
         logger.info("Fetching symbols from market buffer")
         symbols = market_buffer.get_symbols()
         logger.info(f"Found {len(symbols)} symbols to report")
 
-        summaries = []
-        decisions = []
-        for sym in symbols:
-            s = market_buffer.get_summary(sym)
-            r = compute_recommendation(sym, summary=s)
-            s["recommendation"] = r["action"]
-            s["confidence"] = r["confidence"]
-            summaries.append(s)
-            decisions.append(r)
+        summaries, decisions = _build_ws_summaries_and_decisions(symbols, use_db=False)
 
         # Get initial market indexes
         market_indexes = await fetch_tracked_indexes()
@@ -484,6 +434,19 @@ async def websocket_endpoint(websocket: WebSocket):
         })
         await manager.register(websocket)
         logger.info("Init message sent successfully, entering receive loop")
+
+        # Augment with DB-backed interval anchors right after first paint if DB is available
+        if symbols and data_layer.get_db_manager() is not None:
+            db_summaries, db_decisions = _build_ws_summaries_and_decisions(symbols, use_db=True)
+            await websocket.send_json({
+                "type": "update",
+                "timestamp": epoch_seconds(now_utc()),
+                "time_str": hhmmss(now_utc()),
+                "symbols": db_summaries,
+                "decisions": db_decisions,
+                "market_indexes": market_indexes,
+                "marketIndexes": market_indexes
+            })
 
         while True:
             # Keep socket open and accept incoming ping/client messages

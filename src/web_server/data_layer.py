@@ -128,58 +128,78 @@ TRACKED_INDEXES = ["VIX", "DJIA", "SP500", "NASDAQ", "RUSSELL2000"]
 # them. One list so the summary and the batched DB read cannot drift apart.
 SUMMARY_DURATIONS = ("1h", "24h", "5d", "30d", "1y", "ytd")
 
-DEFAULT_INDEX_VALUATIONS = {
+_LEGACY_SEED_PRICES: dict[str, float] = {
+    "VIX": 15.25,
+    "DJIA": 43910.50,
+    "SP500": 5865.75,
+    "NASDAQ": 18518.60,
+    "RUSSELL2000": 2240.10,
+}
+
+DEFAULT_INDEXES: dict[str, dict[str, Any]] = {
     "VIX": {
         "index": "VIX",
         "displayName": "VIX",
         "ticker": "^VIX",
-        "currentPrice": 15.25,
-        "change": -0.45,
-        "changePercent": -2.87,
-        "priceType": "persisted",
-        "lastUpdate": "16:00:00"
+        "currentPrice": None,
+        "openPrice": None,
+        "change": None,
+        "changePercent": None,
+        "priceType": "placeholder",
+        "lastUpdate": None,
+        "timestamp": None,
     },
     "DJIA": {
         "index": "DJIA",
         "displayName": "DJIA",
         "ticker": "^DJI",
-        "currentPrice": 43910.50,
-        "change": 145.20,
-        "changePercent": 0.33,
-        "priceType": "persisted",
-        "lastUpdate": "16:00:00"
+        "currentPrice": None,
+        "openPrice": None,
+        "change": None,
+        "changePercent": None,
+        "priceType": "placeholder",
+        "lastUpdate": None,
+        "timestamp": None,
     },
     "SP500": {
         "index": "SP500",
         "displayName": "S&P 500",
         "ticker": "SPX",
-        "currentPrice": 5865.75,
-        "change": 22.40,
-        "changePercent": 0.38,
-        "priceType": "persisted",
-        "lastUpdate": "16:00:00"
+        "currentPrice": None,
+        "openPrice": None,
+        "change": None,
+        "changePercent": None,
+        "priceType": "placeholder",
+        "lastUpdate": None,
+        "timestamp": None,
     },
     "NASDAQ": {
         "index": "NASDAQ",
         "displayName": "NASDAQ",
         "ticker": "^IXIC",
-        "currentPrice": 18518.60,
-        "change": 115.30,
-        "changePercent": 0.63,
-        "priceType": "persisted",
-        "lastUpdate": "16:00:00"
+        "currentPrice": None,
+        "openPrice": None,
+        "change": None,
+        "changePercent": None,
+        "priceType": "placeholder",
+        "lastUpdate": None,
+        "timestamp": None,
     },
     "RUSSELL2000": {
         "index": "RUSSELL2000",
         "displayName": "Russel 2k",
         "ticker": "RUT",
-        "currentPrice": 2240.10,
-        "change": 12.80,
-        "changePercent": 0.57,
-        "priceType": "persisted",
-        "lastUpdate": "16:00:00"
-    }
+        "currentPrice": None,
+        "openPrice": None,
+        "change": None,
+        "changePercent": None,
+        "priceType": "placeholder",
+        "lastUpdate": None,
+        "timestamp": None,
+    },
 }
+
+DEFAULT_INDEX_VALUATIONS = DEFAULT_INDEXES
 
 
 class IndexStore:
@@ -194,9 +214,21 @@ class IndexStore:
         self.load()
         atexit.register(self.flush_cache, False)
 
+    @staticmethod
+    def _is_placeholder_or_fabricated(key: str, entry: dict[str, Any]) -> bool:
+        price = entry.get("currentPrice")
+        price_type = entry.get("priceType")
+        if price is None or price_type == "placeholder":
+            return True
+        return bool(
+            entry.get("lastUpdate") == "16:00:00"
+            and price_type in ("closing", "persisted")
+            and price == _LEGACY_SEED_PRICES.get(key.upper())
+        )
+
     def load(self):
         with self._lock:
-            self._indexes = {k: dict(v) for k, v in DEFAULT_INDEX_VALUATIONS.items()}
+            self._indexes = {k: dict(v) for k, v in DEFAULT_INDEXES.items()}
             if os.path.exists(self.cache_file):
                 try:
                     with open(self.cache_file) as f:
@@ -204,7 +236,7 @@ class IndexStore:
                         if isinstance(saved, dict):
                             for k, v in saved.items():
                                 k_upper = k.upper()
-                                if isinstance(v, dict):
+                                if isinstance(v, dict) and not self._is_placeholder_or_fabricated(k_upper, v):
                                     if k_upper in self._indexes:
                                         self._indexes[k_upper].update(v)
                                     else:
@@ -213,10 +245,17 @@ class IndexStore:
                     logger.debug("Failed loading index cache: %s", e)
 
     def _write_snapshot(self, snapshot: dict[str, dict[str, Any]]) -> None:
+        persisted = {
+            k: v
+            for k, v in snapshot.items()
+            if isinstance(v, dict)
+            and v.get("priceType") != "placeholder"
+            and v.get("currentPrice") is not None
+        }
         try:
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
             with open(self.cache_file, "w") as f:
-                json.dump(snapshot, f, indent=2)
+                json.dump(persisted, f, indent=2)
         except CACHE_FAILURES as e:
             logger.debug("Failed saving index cache: %s", e)
 
@@ -236,6 +275,25 @@ class IndexStore:
     def save(self):
         self.flush_cache(force=True)
 
+    @staticmethod
+    def _placeholder_entry(index: str) -> dict[str, Any]:
+        idx_upper = index.upper()
+        display_name = INDEX_DISPLAY_NAMES.get(idx_upper, idx_upper)
+        ticker = INDEX_TICKERS.get(idx_upper, idx_upper)
+        clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
+        return {
+            "index": idx_upper,
+            "displayName": display_name,
+            "ticker": clean_ticker,
+            "currentPrice": None,
+            "openPrice": None,
+            "change": None,
+            "changePercent": None,
+            "priceType": "placeholder",
+            "lastUpdate": None,
+            "timestamp": None,
+        }
+
     def update_index(
         self,
         index: str,
@@ -243,25 +301,24 @@ class IndexStore:
         change: float | None = None,
         change_percent: float | None = None,
         last_update: str | None = None,
-        price_type: str = "live"
+        price_type: str = "live",
+        timestamp: float | None = None,
     ):
         index = index.upper()
+        now_ts = timestamp if timestamp is not None else epoch_seconds(now_utc())
         with self._lock:
             if index not in self._indexes:
-                display_name = INDEX_DISPLAY_NAMES.get(index, index)
-                ticker = INDEX_TICKERS.get(index, index)
-                clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
-                self._indexes[index] = {
-                    "index": index,
-                    "displayName": display_name,
-                    "ticker": clean_ticker,
+                entry = self._placeholder_entry(index)
+                entry.update({
                     "currentPrice": current_price,
                     "openPrice": current_price,
                     "change": 0.0,
                     "changePercent": 0.0,
                     "priceType": price_type,
-                    "lastUpdate": last_update or hhmmss(now_utc())
-                }
+                    "lastUpdate": last_update or hhmmss(now_utc()),
+                    "timestamp": now_ts,
+                })
+                self._indexes[index] = entry
             item = self._indexes[index]
             prev_price = item.get("currentPrice") or current_price
             open_price = item.get("openPrice")
@@ -275,6 +332,8 @@ class IndexStore:
                 item["change"] = round(float(change), 2)
                 item["openPrice"] = round(float(current_price - change), 2)
             else:
+                if item.get("openPrice") is None:
+                    item["openPrice"] = round(float(open_price), 2)
                 c = current_price - open_price if open_price > 0 else 0.0
                 item["change"] = round(float(c), 2)
 
@@ -288,6 +347,7 @@ class IndexStore:
             item["currentPrice"] = round(float(current_price), 2)
             item["priceType"] = price_type
             item["lastUpdate"] = last_update or hhmmss(now_utc())
+            item["timestamp"] = now_ts
             self._dirty = True
             now_mono = time.monotonic()
             should_flush = (
@@ -302,31 +362,17 @@ class IndexStore:
         with self._lock:
             if index in self._indexes:
                 return dict(self._indexes[index])
-            display_name = INDEX_DISPLAY_NAMES.get(index, index)
-            ticker = INDEX_TICKERS.get(index, index)
-            clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
-            return {
-                "index": index,
-                "displayName": display_name,
-                "ticker": clean_ticker,
-                "currentPrice": 0.0,
-                "change": 0.0,
-                "changePercent": 0.0,
-                "priceType": "no_data",
-                "lastUpdate": None
-            }
+            return self._placeholder_entry(index)
 
     def get_all(self, tracked: list[str] | None = None) -> list[dict[str, Any]]:
         indices = tracked or TRACKED_INDEXES
         with self._lock:
-            results = []
-            for idx in indices:
-                idx_upper = idx.upper()
-                if idx_upper in self._indexes:
-                    results.append(dict(self._indexes[idx_upper]))
-                else:
-                    results.append(self.get_index(idx))
-            return results
+            return [
+                dict(self._indexes[idx.upper()])
+                if idx.upper() in self._indexes
+                else self._placeholder_entry(idx)
+                for idx in indices
+            ]
 
 
 index_store = IndexStore()
@@ -350,7 +396,8 @@ def update_index_from_tick(
         change=change,
         change_percent=change_percent,
         last_update=time_str,
-        price_type="live"
+        price_type="live",
+        timestamp=timestamp,
     )
 
 
@@ -447,6 +494,11 @@ class MarketDataBuffer:
             if history:
                 return history[-1]
             return None
+
+    def get_open_price(self, symbol: str, default: float = 0.0) -> float:
+        symbol = symbol.upper()
+        with self._lock:
+            return self._open_prices.get(symbol, default)
 
     def get_ticks(self, symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         symbol = symbol.upper()
@@ -625,6 +677,8 @@ class MarketDataBuffer:
                 "low": round(rec["low"], 2),
                 "volume": round(rec["volume"], 2),
                 "lastUpdate": rec["time_str"],
+                "timestamp": rec.get("timestamp"),
+                "priceType": "closing",
                 **self._duration_stats(current, starts, start_p),
             }
         except DB_READ_FAILURES as e:
@@ -642,14 +696,19 @@ class MarketDataBuffer:
             "low": 0.0,
             "volume": 0.0,
             "lastUpdate": None,
+            "timestamp": None,
+            "priceType": "placeholder",
         }
 
-    def get_summary(self, symbol: str, duration: str = "24h") -> dict[str, Any]:
+    def get_summary(
+        self, symbol: str, duration: str = "24h", use_db: bool = True
+    ) -> dict[str, Any]:
         """Thread-safe summary calculation including price change based on interval.
 
         Args:
             symbol: Stock/crypto symbol
             duration: Time interval for price change calculation (1h, 24h, 5d, 30d, 1y, ytd)
+            use_db: Whether to query the database for historical anchors or cold symbols
         Returns:
             Dict with symbol, currentPrice, change, changePercent, high, low, volume, lastUpdate
                   plus all duration-based price changes and percentage changes.
@@ -660,9 +719,10 @@ class MarketDataBuffer:
 
             # If no history in buffer, check database so symbols like AAPL/TSLA never show 0.00 on restart
             if not history:
-                db_summary = self._db_only_summary(symbol, duration)
-                if db_summary:
-                    return db_summary
+                if use_db:
+                    db_summary = self._db_only_summary(symbol, duration)
+                    if db_summary:
+                        return db_summary
                 return self._empty_summary(symbol)
 
             latest_tick = history[-1]
@@ -670,14 +730,18 @@ class MarketDataBuffer:
             current = latest_tick.price
             open_price = self._open_prices.get(symbol, earliest_tick.price)
 
-            # Per-duration changes, measured from the stored interval anchors.
-            starts = self._interval_starts(symbol)
+            # Per-duration changes, measured from the stored interval anchors (or buffer open when use_db=False).
+            starts = self._interval_starts(symbol) if use_db else {}
             dur_stats = self._duration_stats(current, starts, open_price)
 
             # Change for the duration the caller asked about.
-            change, change_pct = self._change_for_duration(
-                symbol, current, duration, open_price, starts=starts
-            )
+            if use_db:
+                change, change_pct = self._change_for_duration(
+                    symbol, current, duration, open_price, starts=starts
+                )
+            else:
+                change = current - open_price
+                change_pct = ((change / open_price) * 100.0) if open_price > 0 else 0.0
 
             high_price = self._running_high.get(symbol, current)
             low_price = self._running_low.get(symbol, current)
@@ -691,7 +755,9 @@ class MarketDataBuffer:
                 "high": round(high_price, 2),
                 "low": round(low_price, 2),
                 "volume": round(total_vol, 2),
-                "lastUpdate": hhmmss(latest_tick.timestamp)
+                "lastUpdate": hhmmss(latest_tick.timestamp),
+                "timestamp": latest_tick.timestamp,
+                "priceType": "live",
             }
             result.update(dur_stats)
             return result
@@ -901,5 +967,56 @@ def compute_recommendation(
         "timestamp": epoch_seconds(now_utc()),
         "time_str": hhmmss(now_utc())
     }
+
+
+def resolve_market_index(index: str) -> dict[str, Any]:
+    """Resolve one market index from live buffer ticks or the persistent index store."""
+    idx_key = index.upper()
+    display_name = INDEX_DISPLAY_NAMES.get(idx_key, idx_key)
+    ticker = INDEX_TICKERS.get(idx_key, idx_key)
+    clean_ticker = ticker[1:] if ticker.startswith("^") else ticker
+    candidates = INDEX_CANDIDATE_SYMBOLS.get(idx_key, [idx_key, clean_ticker])
+
+    live_found = False
+    for sym in candidates:
+        tick = market_buffer.get_latest_tick(sym)
+        if tick and tick.price > 0:
+            open_p = market_buffer.get_open_price(sym, tick.price)
+            change = tick.price - open_p if open_p > 0 else 0.0
+            change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
+            index_store.update_index(
+                index=idx_key,
+                current_price=tick.price,
+                change=change,
+                change_percent=change_pct,
+                last_update=hhmmss(tick.timestamp),
+                price_type="live",
+                timestamp=tick.timestamp,
+            )
+            live_found = True
+            break
+
+    res = index_store.get_index(idx_key)
+    if not live_found:
+        if res.get("currentPrice") is not None and res.get("priceType") != "placeholder":
+            res["priceType"] = (
+                "closing"
+                if res.get("priceType") == "live"
+                else res.get("priceType", "closing")
+            )
+        else:
+            res["currentPrice"] = None
+            res["priceType"] = "placeholder"
+    res["displayName"] = display_name
+    res["ticker"] = clean_ticker
+    return res
+
+
+async def fetch_tracked_indexes() -> list[dict[str, Any]]:
+    """Fetch data for all tracked market indices from persistent store.
+    Uses fast in-memory checks without historical database lookups.
+    """
+    return [resolve_market_index(idx_key) for idx_key in TRACKED_INDEXES]
+
 
 
