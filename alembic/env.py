@@ -59,10 +59,12 @@ def run_migrations_online() -> None:
     url = _resolve_url()
     section = config.get_section(config.config_ini_section, {})
     section["sqlalchemy.url"] = url
+    connect_args = {"connect_timeout": 5} if url.startswith("postgresql") else {}
     engine = engine_from_config(
         section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     with engine.connect() as connection:

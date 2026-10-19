@@ -169,7 +169,9 @@ echo "Installing/updating dependencies..."
 .venv/bin/pip install -r requirements.txt
 
 echo "Applying in-place Alembic database migrations..."
-PYTHONPATH="." .venv/bin/python -m alembic -c alembic.ini upgrade head
+if ! PYTHONPATH="." .venv/bin/python -m alembic -c alembic.ini upgrade head; then
+    echo "Warning: Could not reach database to apply Alembic migrations during deploy; continuing service deployment."
+fi
 REMOTE_SETUP
 
 echo -e "${GREEN}✓ Python dependencies installed in virtual environment${NC}"
