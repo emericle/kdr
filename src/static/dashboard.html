@@ -512,7 +512,79 @@
         .canvas-wrap {
             position: relative;
             height: 380px;
+            height: clamp(220px, 45vh, 380px);
             width: 100%;
+        }
+
+        .awaiting-tick {
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-style: italic;
+            color: var(--text-muted);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        .stale,
+        .market-index-card.stale,
+        .symbol-card.stale {
+            opacity: 0.78;
+            border-style: dashed;
+        }
+
+        .index-last-update.stale,
+        .index-updated.stale,
+        .symbol-updated.stale {
+            color: var(--color-hold);
+        }
+
+        .delta-window-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            background-color: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-family: monospace;
+        }
+
+        .stale-overlay,
+        .disconnected-banner {
+            background-color: rgba(245, 158, 11, 0.14);
+            border: 1px solid rgba(245, 158, 11, 0.45);
+            color: var(--color-hold);
+            padding: 10px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .is-disconnected .market-index-card,
+        .is-disconnected .symbol-card,
+        .is-disconnected .chart-card,
+        .is-disconnected .decision-box {
+            opacity: 0.75;
+        }
+
+        .chart-insufficient-data {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 24px;
+            background-color: rgba(19, 27, 46, 0.88);
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            font-weight: 600;
+            z-index: 5;
         }
 
         .chart-controls {
@@ -776,7 +848,7 @@
     </style>
 </head>
 <body>
-    <div id="app">
+    <div id="app" :class="{ 'is-disconnected': !connected }">
         <!-- Sticky Header -->
         <header>
             <div class="header-title">
@@ -792,14 +864,18 @@
             </div>
         </header>
 
-        <main>
+        <main :class="{ 'is-disconnected': !connected }">
+            <div v-if="!connected" class="stale-overlay disconnected-banner" role="status" aria-live="polite">
+                Stream disconnected — displayed prices and decisions are stale until connection is restored.
+            </div>
+
             <!-- Market Indexes Display Across Top -->
             <div class="market-indexes-row">
                 <div 
                     v-for="idx in displayMarketIndexes" 
                     :key="idx.index" 
                     class="market-index-card"
-                    :class="getIndexCardClass(idx)"
+                    :class="[getIndexCardClass(idx), { stale: isStale(idx) }]"
                 >
                     <div class="index-header">
                         <span class="index-name">{{ idx.displayName || idx.index }}</span>
@@ -807,17 +883,21 @@
                     </div>
                     <div class="index-main-row">
                         <div class="index-price-row">
-                            <span class="index-price">
+                            <span v-if="idx.currentPrice === null || idx.currentPrice === undefined || idx.priceType === 'placeholder'" class="awaiting-tick">awaiting first tick</span>
+                            <span v-else class="index-price">
                                 {{ idx.index === 'VIX' ? '' : '$' }}{{ formatPrice(idx.currentPrice) }}
                             </span>
                         </div>
-                        <div class="index-change" :class="getChangeClass(idx.changePercent)">
+                        <div v-if="idx.currentPrice === null || idx.currentPrice === undefined || idx.priceType === 'placeholder'" class="index-change neutral">
+                            <span class="price-change neutral">—</span>
+                        </div>
+                        <div v-else class="index-change" :class="getChangeClass(idx.changePercent)">
                             <span class="price-change">{{ formatSignedDelta(idx.change, idx.index === 'VIX' ? '' : '$') }}</span>
                             <span class="change-pct">{{ formatSignedPercent(idx.changePercent) }}</span>
                         </div>
                     </div>
-                    <div class="index-footer" v-if="idx.lastUpdate">
-                        <span class="index-last-update">Last update: {{ idx.lastUpdate }}</span>
+                    <div class="index-footer">
+                        <span class="index-last-update index-updated" :class="{ stale: isStale(idx) }">{{ formatUpdateAge(idx) }}</span>
                     </div>
                 </div>
             </div>
@@ -837,6 +917,7 @@
                         v-for="item in symbols" 
                         :key="item.symbol" 
                         class="symbol-card"
+                        :class="{ stale: isStale(item) }"
                         @click="selectSymbol(item.symbol)"
                     >
                         <div class="card-top">
@@ -855,6 +936,7 @@
                             <span class="change-pct" :class="getChangeClass(getSymbolDurationChangePct(item))">
                                 {{ formatSignedPercent(getSymbolDurationChangePct(item)) }}
                             </span>
+                            <span class="delta-window-label" title="Active delta window (24h ▾)">{{ selectedDuration }} ▾</span>
                         </div>
                         <div class="card-stats">
                             <div class="stat-item">
@@ -871,7 +953,8 @@
                             </div>
                         </div>
                         <div class="card-footer">
-                            <span>Confidence: {{ Math.round((item.confidence || 0.7) * 100) }}%</span>
+                            <span>Confidence: {{ formatConfidence(item.confidence) }}</span>
+                            <span class="symbol-updated" :class="{ stale: isStale(item) }">{{ formatUpdateAge(item) }}</span>
                             <span class="click-hint">View Chart →</span>
                         </div>
                     </div>
@@ -907,6 +990,7 @@
                                         <span class="change-pct" :class="getChangeClass(getSymbolDurationChangePct(activeSymbolData))">
                                             {{ formatSignedPercent(getSymbolDurationChangePct(activeSymbolData)) }}
                                         </span>
+                                        <span class="delta-window-label" title="Active delta window (24h ▾)">{{ selectedDuration }} ▾</span>
                                     </div>
                                 </div>
                             </div>
@@ -942,16 +1026,19 @@
                                 <label class="control-label">Moving Averages:</label>
                                 <label class="checkbox-label">
                                     <input type="checkbox" v-model="show200DayMA" @change="initChart">
-                                    <span>200-Day</span>
+                                    <span>200-Tick MA</span>
                                 </label>
                                 <label class="checkbox-label">
                                     <input type="checkbox" v-model="show50DayMA" @change="initChart">
-                                    <span>50-Day</span>
+                                    <span>50-Tick MA</span>
                                 </label>
                             </div>
                         </div>
 
                         <div class="canvas-wrap">
+                            <div v-if="chartInsufficientData" class="chart-insufficient-data" data-state="insufficient data for this window">
+                                Insufficient data for this window (available span: {{ chartInsufficientData.actualSpan }})
+                            </div>
                             <canvas id="tickChart"></canvas>
                         </div>
                     </div>
@@ -966,7 +1053,7 @@
                                 </div>
                                 <div class="confidence-meter">
                                     <span class="stat-label">Confidence</span>
-                                    <span class="confidence-val">{{ Math.round((activeDecision.confidence || 0.7) * 100) }}%</span>
+                                    <span class="confidence-val">{{ formatConfidence(activeDecision.confidence) }}</span>
                                 </div>
                             </div>
 
@@ -976,7 +1063,7 @@
                                 </li>
                             </ul>
                             <p v-else style="color: var(--text-muted); font-size: 0.85rem;">
-                                Model evaluating optimal Bellman trajectory based on real-time price state.
+                                no decision recorded yet
                             </p>
                         </div>
 
@@ -987,12 +1074,12 @@
                                     <span class="decision-badge" :class="dec.action" style="padding: 2px 8px; font-size: 0.75rem;">
                                         {{ dec.action }}
                                     </span>
-                                    <span style="font-weight: 600; font-family: monospace;">{{ Math.round(dec.confidence * 100) }}%</span>
+                                    <span style="font-weight: 600; font-family: monospace;">{{ formatConfidence(dec.confidence) }}</span>
                                     <span class="history-time">{{ dec.time_str }}</span>
                                 </div>
                             </div>
                             <p v-else style="color: var(--text-muted); font-size: 0.85rem; padding: 12px 0;">
-                                Monitoring decisions live... New decisions will log here as trades execute.
+                                no decision recorded yet
                             </p>
                         </div>
                     </div>
@@ -1016,6 +1103,8 @@
                 const show200DayMA = ref(false);
                 const show50DayMA = ref(false);
                 const dropdownOpen = ref(false);
+                const chartInsufficientData = ref(null);
+                const SESSION_LENGTH_SECONDS = 28800;
                 const durationOptions = [
                     { value: '1h', label: '1 Hour' },
                     { value: '24h', label: '24 Hours' },
@@ -1042,11 +1131,11 @@
                 };
 
                 const marketIndexesMap = reactive({
-                    'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: 15.25, change: -0.45, changePercent: -2.87, lastUpdate: '16:00:00' },
-                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: '^DJI', currentPrice: 43910.50, change: 145.20, changePercent: 0.33, lastUpdate: '16:00:00' },
-                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPX', currentPrice: 5865.75, change: 22.40, changePercent: 0.38, lastUpdate: '16:00:00' },
-                    'NASDAQ': { index: 'NASDAQ', displayName: 'NASDAQ', ticker: '^IXIC', currentPrice: 18518.60, change: 115.30, changePercent: 0.63, lastUpdate: '16:00:00' },
-                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'RUT', currentPrice: 2240.10, change: 12.80, changePercent: 0.57, lastUpdate: '16:00:00' }
+                    'VIX': { index: 'VIX', displayName: 'VIX', ticker: '^VIX', currentPrice: null, change: null, changePercent: null, priceType: 'placeholder', lastUpdate: null },
+                    'DJIA': { index: 'DJIA', displayName: 'DJIA', ticker: '^DJI', currentPrice: null, change: null, changePercent: null, priceType: 'placeholder', lastUpdate: null },
+                    'SP500': { index: 'SP500', displayName: 'S&P 500', ticker: 'SPX', currentPrice: null, change: null, changePercent: null, priceType: 'placeholder', lastUpdate: null },
+                    'NASDAQ': { index: 'NASDAQ', displayName: 'NASDAQ', ticker: '^IXIC', currentPrice: null, change: null, changePercent: null, priceType: 'placeholder', lastUpdate: null },
+                    'RUSSELL2000': { index: 'RUSSELL2000', displayName: 'Russel 2k', ticker: 'RUT', currentPrice: null, change: null, changePercent: null, priceType: 'placeholder', lastUpdate: null }
                 });
 
                 const displayMarketIndexes = computed(() => {
@@ -1054,19 +1143,74 @@
                         index: key,
                         displayName: INDEX_DISPLAY_NAMES[key] || key,
                         ticker: INDEX_TICKERS[key] || key,
-                        currentPrice: 0,
-                        change: 0,
-                        changePercent: 0,
+                        currentPrice: null,
+                        change: null,
+                        changePercent: null,
+                        priceType: 'placeholder',
                         lastUpdate: null
                     });
                 });
                 const marketIndexes = displayMarketIndexes;
 
+                function getItemTimestampSeconds(item) {
+                    if (!item || item.timestamp === undefined || item.timestamp === null) return null;
+                    const raw = Number(item.timestamp);
+                    if (!isNaN(raw) && raw > 0) {
+                        return raw > 1e11 ? raw / 1000 : raw;
+                    }
+                    const parsed = Date.parse(item.timestamp);
+                    return !isNaN(parsed) ? parsed / 1000 : null;
+                }
+
+                function isStale(item) {
+                    if (!connected.value) return true;
+                    if (!item) return true;
+                    if (item.priceType && item.priceType !== 'live') return true;
+                    const tsSec = getItemTimestampSeconds(item);
+                    if (tsSec !== null && (Date.now() / 1000 - tsSec) > SESSION_LENGTH_SECONDS) {
+                        return true;
+                    }
+                    return false;
+                }
+
+                function formatUpdateAge(item) {
+                    if (!item) return 'awaiting first tick';
+                    if (item.priceType === 'placeholder' || item.priceType === 'no_data') {
+                        return 'awaiting first tick';
+                    }
+                    const label = item.lastUpdate || item.time_str || null;
+                    const tsSec = getItemTimestampSeconds(item);
+                    if (!label && tsSec === null) {
+                        return 'awaiting first tick';
+                    }
+                    if (tsSec !== null) {
+                        const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - tsSec));
+                        if (ageSec > SESSION_LENGTH_SECONDS) {
+                            const dateStr = new Date(tsSec * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                            const ageHours = Math.floor(ageSec / 3600);
+                            const ageLabel = ageHours >= 24 ? `${Math.floor(ageHours / 24)}d ago` : `${ageHours}h ago`;
+                            return `stale · ${dateStr} ${label || ''} (${ageLabel})`.replace(/\s+/g, ' ').trim();
+                        }
+                    }
+                    if (item.priceType && item.priceType !== 'live') {
+                        const prefix = item.priceType === 'closing' ? 'closing · ' : `${item.priceType} · `;
+                        return label ? `${prefix}${label}` : prefix.slice(0, -3);
+                    }
+                    if (label) {
+                        return label;
+                    }
+                    return new Date(tsSec * 1000).toLocaleTimeString();
+                }
+
                 function getIndexCardClass(idx) {
-                    const change = idx.changePercent !== undefined ? idx.changePercent : (idx.change || 0);
-                    if (change > 0) return 'up';
-                    if (change < 0) return 'down';
-                    return 'neutral';
+                    if (!idx || idx.currentPrice === null || idx.currentPrice === undefined || idx.priceType === 'placeholder') {
+                        return isStale(idx) ? 'neutral stale' : 'neutral';
+                    }
+                    const change = idx.changePercent !== undefined && idx.changePercent !== null ? idx.changePercent : (idx.change || 0);
+                    let dir = 'neutral';
+                    if (change > 0) dir = 'up';
+                    else if (change < 0) dir = 'down';
+                    return isStale(idx) ? `${dir} stale` : dir;
                 }
 
                 function formatSignedChange(val) {
@@ -1166,10 +1310,11 @@
                     if (!selectedSymbol.value) return {};
                     const list = decisionsMap[selectedSymbol.value] || [];
                     if (list.length > 0) return list[0];
+                    const hasConfidence = activeSymbolData.value.confidence !== null && activeSymbolData.value.confidence !== undefined;
                     return {
                         action: activeSymbolData.value.recommendation || 'HOLD',
-                        confidence: activeSymbolData.value.confidence || 0.70,
-                        reasoning: ['Model evaluating optimal Bellman value function for current tick']
+                        confidence: hasConfidence ? activeSymbolData.value.confidence : null,
+                        reasoning: ['no decision recorded yet']
                     };
                 });
 
@@ -1177,6 +1322,11 @@
                     if (!selectedSymbol.value) return [];
                     return decisionsMap[selectedSymbol.value] || [];
                 });
+
+                function formatConfidence(val) {
+                    if (val === undefined || val === null || isNaN(val)) return '—';
+                    return `${Math.round(Number(val) * 100)}%`;
+                }
 
                 function formatPrice(val) {
                     if (val === undefined || val === null || isNaN(val)) return '0.00';
@@ -1232,6 +1382,10 @@
                 }
 
                 function calculateMA(dataPoints, period) {
+                    if (!Array.isArray(dataPoints) || dataPoints.length === 0) return [];
+                    if (dataPoints.length < period) {
+                        return dataPoints.map(() => null);
+                    }
                     const result = [];
                     for (let i = 0; i < dataPoints.length; i++) {
                         if (i < period - 1) {
@@ -1514,6 +1668,7 @@
                         chartInstance.destroy();
                         chartInstance = null;
                     }
+                    chartInsufficientData.value = null;
                     selectedSymbol.value = null;
                     document.title = 'KDR Real-Time Market & Decision Monitor';
                     if (updateHistory) {
@@ -1522,21 +1677,59 @@
                     }
                 }
 
+                function formatActualSpan(hist) {
+                    if (!hist || !hist.length) return 'none';
+                    const firstRaw = hist[0].timestamp || (hist[0].time ? Date.parse(hist[0].time) : 0);
+                    const lastRaw = hist[hist.length - 1].timestamp || (hist[hist.length - 1].time ? Date.parse(hist[hist.length - 1].time) : 0);
+                    const firstMs = firstRaw && firstRaw < 1e11 ? firstRaw * 1000 : firstRaw;
+                    const lastMs = lastRaw && lastRaw < 1e11 ? lastRaw * 1000 : lastRaw;
+                    if (!firstMs || !lastMs || isNaN(firstMs) || isNaN(lastMs)) {
+                        const firstLabel = hist[0].time || 'unknown';
+                        const lastLabel = hist[hist.length - 1].time || 'unknown';
+                        return firstLabel === lastLabel ? firstLabel : `${firstLabel} – ${lastLabel}`;
+                    }
+                    const fmt = (ms) => new Date(ms).toLocaleString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                    if (firstMs === lastMs) return fmt(firstMs);
+                    return `${fmt(firstMs)} – ${fmt(lastMs)}`;
+                }
+
                 function getFilteredHistory(hist) {
-                    if (!hist || !hist.length) return [];
+                    if (!hist || !hist.length) {
+                        chartInsufficientData.value = null;
+                        return [];
+                    }
                     const startTs = getDurationRange();
                     let filtered = hist;
                     if (startTs) {
                         filtered = hist.filter(point => {
-                            const ts = point.timestamp || (point.time ? new Date(point.time).getTime() : 0);
+                            const rawTs = point.timestamp || (point.time ? new Date(point.time).getTime() : 0);
+                            const ts = rawTs && rawTs < 1e11 ? rawTs * 1000 : rawTs;
                             return !ts || ts >= startTs;
                         });
                     }
-                    // If filtering resulted in 0 points but we have history, fall back to recent points
-                    if (!filtered.length && hist.length > 0) {
-                        filtered = hist.slice(-100);
+                    if (filtered.length === 0 && hist.length > 0) {
+                        const actualSpan = formatActualSpan(hist);
+                        chartInsufficientData.value = {
+                            message: 'Insufficient data for this window',
+                            windowLabel: getDurationLabel(selectedDuration.value),
+                            actualSpan
+                        };
+                        return [];
                     }
+                    chartInsufficientData.value = null;
                     return filtered;
+                }
+
+                function getFilteredTicks(sym) {
+                    const targetSym = sym || selectedSymbol.value;
+                    const hist = (targetSym && tickHistoryMap[targetSym]) ? tickHistoryMap[targetSym] : [];
+                    return getFilteredHistory(hist);
                 }
 
                 function computeYAxisBounds(filteredHistory, ma200 = [], ma50 = []) {
@@ -1623,7 +1816,7 @@
 
                     if (ma200.length > 0) {
                         datasets.push({
-                            label: '200-Day MA',
+                            label: '200-Tick MA',
                             data: ma200,
                             borderColor: ma200Color,
                             borderWidth: 2,
@@ -1635,7 +1828,7 @@
 
                     if (ma50.length > 0) {
                         datasets.push({
-                            label: '50-Day MA',
+                            label: '50-Tick MA',
                             data: ma50,
                             borderColor: ma50Color,
                             borderWidth: 2,
@@ -1648,7 +1841,7 @@
                     chartInstance = new Chart(ctx, {
                         type: 'line',
                         data: {
-                            labels: labels.length ? labels : ['Starting...'],
+                            labels: labels.length ? labels : (chartInsufficientData.value ? [] : ['Starting...']),
                             datasets: datasets
                         },
                         options: {
@@ -1752,6 +1945,8 @@
                     chartInstance.update('none');
                 }
 
+                let handleClickOutside = null;
+
                 onMounted(() => {
                     connectWebSocket();
                     fetchMarketIndexes();
@@ -1785,7 +1980,7 @@
                     }
 
                     // Click outside handler to close dropdown
-                    const handleClickOutside = (event) => {
+                    handleClickOutside = (event) => {
                         const wrapper = document.querySelector('.custom-dropdown-wrapper');
                         if (wrapper && !wrapper.contains(event.target) && dropdownOpen.value) {
                             dropdownOpen.value = false;
@@ -1795,7 +1990,9 @@
                 });
 
                 onUnmounted(() => {
-                    document.removeEventListener('click', handleClickOutside);
+                    if (handleClickOutside) {
+                        document.removeEventListener('click', handleClickOutside);
+                    }
                     if (chartInstance) {
                         chartInstance.destroy();
                     }
@@ -1824,11 +2021,18 @@
                     goBack,
                     formatPrice,
                     formatChange,
+                    formatConfidence,
                     formatNumber,
                     getChangeClass,
                     displayMarketIndexes,
                     marketIndexes,
                     getIndexCardClass,
+                    isStale,
+                    formatUpdateAge,
+                    chartInsufficientData,
+                    formatActualSpan,
+                    getFilteredHistory,
+                    getFilteredTicks,
                     formatSignedChange,
                     formatSignedDelta,
                     formatSignedPercent,
