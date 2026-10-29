@@ -129,3 +129,19 @@ def test_epoch_seconds_of_a_stored_datetime_is_stable():
     value = datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
     assert epoch_seconds(value) == 1791732600.0
     assert to_utc(epoch_seconds(value)) == value
+
+
+class MsgpackTimestamp:
+    """Stand-in for ``msgpack.Timestamp``, the object the Alpaca websocket decodes into."""
+
+    def to_datetime(self) -> datetime:
+        return datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
+
+
+def test_msgpack_timestamp_objects_are_converted_not_rejected():
+    """Alpaca stream ticks carry a msgpack ``Timestamp``, which is a real timestamp."""
+    assert to_utc(MsgpackTimestamp()) == datetime(2026, 10, 11, 15, 30, tzinfo=UTC)
+    assert epoch_seconds(MsgpackTimestamp()) == 1791732600.0
+    assert hhmmss(MsgpackTimestamp()) == "15:30:00"
+    assert minute_key(MsgpackTimestamp()) == "2026-10-11 15:30"
+    assert epoch_minute(MsgpackTimestamp()) == 1791732600 // 60

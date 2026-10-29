@@ -5,7 +5,7 @@ place that reads the clock, so a naive ``datetime.now()`` cannot sneak into a
 comparison that would otherwise raise a "can't compare offset-in-timezones"
 error.
 
-Timestamps arrive in four shapes, and every helper here accepts all four:
+Timestamps arrive in several shapes, and every helper here accepts all of them:
 
 * ``datetime`` -- naive ones are read as UTC, aware ones are converted.
 * epoch seconds (``int``/``float``) -- what the market buffer stores.
@@ -17,6 +17,10 @@ Magnitude decides between the numeric shapes. A value at or above
 ``MILLISECOND_THRESHOLD`` is milliseconds, and anything smaller is seconds.
 The thresholds are epoch seconds past the year 30000, so no real timestamp can
 be mistaken for the wrong shape.
+
+Anything exposing a ``to_datetime()`` method -- the msgpack ``Timestamp`` the
+Alpaca websocket actually decodes into, or a pandas ``Timestamp`` -- is
+converted through that method first.
 """
 
 from datetime import UTC, datetime
@@ -43,6 +47,10 @@ def to_utc(value):
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
+
+    to_dt = getattr(value, "to_datetime", None)
+    if callable(to_dt):
+        return to_utc(to_dt())
 
     if isinstance(value, str):
         return to_utc(datetime.fromisoformat(value))

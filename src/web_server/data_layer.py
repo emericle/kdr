@@ -430,13 +430,18 @@ class MarketDataBuffer:
             return MarketTick(symbol=symbol, price=0.0, size=0.0, timestamp=ts)
 
         tick = MarketTick(symbol=symbol, price=float(price), size=float(size or 0.0), timestamp=ts)
+        # A ticker that maps to a tracked index feeds the index strip instead of a
+        # symbol card; the stream client subscribes these only as proxies, never as
+        # traded symbols.
+        is_index_only = symbol in SYMBOL_TO_INDEX_MAP
 
         with self._lock:
             history = self._history.get(symbol)
             if history is None or len(history) == 0:
                 history = deque(maxlen=self.max_ticks)
                 self._history[symbol] = history
-                self._open_prices[symbol] = tick.price
+                if symbol not in self._open_prices or self._open_prices[symbol] <= 0:
+                    self._open_prices[symbol] = tick.price
                 history.append(tick)
                 self._running_volume[symbol] = tick.size
                 self._running_high[symbol] = tick.price
@@ -474,18 +479,19 @@ class MarketDataBuffer:
             open_p = self._open_prices.get(symbol, tick.price)
 
         # Update index persistent store if this symbol corresponds to a tracked index or proxy
-        try:
-            change = tick.price - open_p if open_p > 0 else 0.0
-            change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
-            update_index_from_tick(symbol, float(price), ts, change=change, change_percent=change_pct)
-        except CACHE_FAILURES as e:
-            logger.debug("Failed updating index from tick for %s: %s", symbol, e)
+        if is_index_only:
+            try:
+                change = tick.price - open_p if open_p > 0 else 0.0
+                change_pct = (change / open_p * 100.0) if open_p > 0 else 0.0
+                update_index_from_tick(symbol, float(price), ts, change=change, change_percent=change_pct)
+            except CACHE_FAILURES as e:
+                logger.debug("Failed updating index from tick for %s: %s", symbol, e)
 
         return tick
 
     def get_symbols(self) -> list[str]:
         with self._lock:
-            return sorted(self._history.keys())
+            return sorted(s for s in self._history if s not in SYMBOL_TO_INDEX_MAP)
 
     def get_latest_tick(self, symbol: str) -> MarketTick | None:
         symbol = symbol.upper()
@@ -499,6 +505,18 @@ class MarketDataBuffer:
         symbol = symbol.upper()
         with self._lock:
             return self._open_prices.get(symbol, default)
+
+    def set_open_price(self, symbol: str, price: float) -> None:
+        """Seed a symbol's reference (open) price from an authoritative source.
+
+        The dashboard derives daily change from this value, so a snapshot's previous
+        close must win over whatever the first streamed tick happens to be.
+        """
+        symbol = symbol.upper()
+        if float(price) <= 0:
+            return
+        with self._lock:
+            self._open_prices[symbol] = float(price)
 
     def get_ticks(self, symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         symbol = symbol.upper()

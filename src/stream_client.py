@@ -12,6 +12,7 @@ from src.logging_config import is_debug
 from src.state_mapper import StateMapper
 from src.symbols import (
     DEFAULT_SYMBOLS,
+    INDEX_PROXY_SYMBOLS,
     from_alpaca_symbol,
     is_crypto_symbol,
     normalize_symbols,
@@ -24,6 +25,7 @@ try:
         decision_buffer,
         market_buffer,
     )
+    from src.web_server.data_layer import SYMBOL_TO_INDEX_MAP
     WEB_SERVER_AVAILABLE = True
 except ImportError:
     WEB_SERVER_AVAILABLE = False
@@ -31,6 +33,7 @@ except ImportError:
     # push to. Every use site checks WEB_SERVER_AVAILABLE first.
     market_buffer = None  # type: ignore[assignment]
     decision_buffer = None  # type: ignore[assignment]
+    SYMBOL_TO_INDEX_MAP = {}
 
 try:
     from alpaca_trade_api.stream import Stream as AlpacaTradeStream
@@ -202,7 +205,9 @@ class AlpacaStreamProcessor:
             return
 
         symbol = parsed['symbol']
-        self.buffer.add_tick(symbol, parsed)
+        is_index_only = symbol.upper() in SYMBOL_TO_INDEX_MAP and symbol.upper() not in self.symbols
+        if not is_index_only:
+            self.buffer.add_tick(symbol, parsed)
         if is_debug():
             logger.debug("Received tick for %s: price=%s, size=%s", symbol, parsed['price'], parsed['size'])
 
@@ -218,7 +223,7 @@ class AlpacaStreamProcessor:
             except PAYLOAD_FAILURES as e:
                 logger.debug("Error pushing to market buffer: %s", e)
 
-        if self.state_mapper:
+        if self.state_mapper and not is_index_only:
             try:
                 self.state_mapper.map_tick_data_to_state([parsed])
             except PAYLOAD_FAILURES as e:
@@ -243,7 +248,8 @@ class AlpacaStreamProcessor:
             'volume': payload['volume'],
             'timestamp': payload['timestamp']
         }
-        if self.data_queue:
+        is_index_only = bar_dict['symbol'].upper() in SYMBOL_TO_INDEX_MAP and bar_dict['symbol'].upper() not in self.symbols
+        if self.data_queue and not is_index_only:
             self.data_queue.put((bar_dict['symbol'], bar_dict))
 
         # Push to web server's market buffer
@@ -252,7 +258,8 @@ class AlpacaStreamProcessor:
                 market_buffer.add_tick(
                     symbol=bar_dict['symbol'],
                     price=bar_dict['close'],
-                    size=bar_dict['volume']
+                    size=bar_dict['volume'],
+                    timestamp=bar_dict['timestamp'],
                 )
             except PAYLOAD_FAILURES as e:
                 logger.debug("Error pushing bar to market buffer: %s", e)
@@ -293,15 +300,69 @@ class AlpacaStreamProcessor:
         except STREAM_FAILURES as e:
             logger.debug("Crypto snapshot fetch error: %s", e)
 
+    def _fetch_equity_snapshot(self) -> None:
+        """Fetches latest equity snapshots (tracked stocks + index ETF proxies) from Alpaca REST."""
+        if not (self.api_key and self.api_secret):
+            return
+        stock_syms = [s for s in self.symbols if not is_crypto_symbol(s)]
+        equity_syms = list(dict.fromkeys([*stock_syms, *INDEX_PROXY_SYMBOLS]))
+        if not equity_syms:
+            return
+        try:
+            if self.rest_client is None:
+                self.rest_client = self._init_rest_client()
+            if self.rest_client is None or not hasattr(self.rest_client, "get_snapshots"):
+                return
+            snapshots = self.rest_client.get_snapshots(equity_syms)
+            if not isinstance(snapshots, dict):
+                return
+            for raw_sym, snap in snapshots.items():
+                app_s = from_alpaca_symbol(raw_sym)
+                trade = getattr(snap, "latest_trade", None)
+                daily_bar = getattr(snap, "daily_bar", None)
+                prev_daily_bar = getattr(snap, "prev_daily_bar", None)
+                price = getattr(trade, "p", None) or getattr(trade, "price", None)
+                if price is None and daily_bar is not None:
+                    price = getattr(daily_bar, "c", None) or getattr(daily_bar, "close", None)
+                if price is None or float(price) <= 0:
+                    continue
+                size = (
+                    getattr(trade, "s", None)
+                    or getattr(trade, "size", None)
+                    or getattr(daily_bar, "v", None)
+                    or 0.0
+                )
+                ts = getattr(trade, "t", None) or getattr(trade, "timestamp", None)
+                open_ref = None
+                if prev_daily_bar is not None:
+                    open_ref = getattr(prev_daily_bar, "c", None) or getattr(prev_daily_bar, "close", None)
+                if (open_ref is None or float(open_ref) <= 0) and daily_bar is not None:
+                    open_ref = getattr(daily_bar, "o", None) or getattr(daily_bar, "open", None)
+                if WEB_SERVER_AVAILABLE and market_buffer and open_ref is not None and float(open_ref) > 0:
+                    market_buffer.set_open_price(app_s, float(open_ref))
+                self.handle_trade({
+                    "symbol": app_s,
+                    "price": float(price),
+                    "size": float(size or 0.0),
+                    "timestamp": ts,
+                })
+        except STREAM_FAILURES as e:
+            logger.debug("Equity snapshot fetch error: %s", e)
+
     def _flusher_loop(self) -> None:
-        """Background thread loop that flushes ready bars every second and refreshes crypto ticks."""
+        """Background thread loop that flushes ready bars every second and refreshes snapshots."""
         last_crypto_fetch = 0.0
+        last_equity_fetch = 0.0
         while self.running:
             try:
                 self.flush_ready_bars()
-                if time.time() - last_crypto_fetch >= 3.0:
+                now = time.time()
+                if now - last_crypto_fetch >= 3.0:
                     self._fetch_crypto_snapshot()
-                    last_crypto_fetch = time.time()
+                    last_crypto_fetch = now
+                if now - last_equity_fetch >= 15.0:
+                    self._fetch_equity_snapshot()
+                    last_equity_fetch = now
             except Exception as e:
                 # Thread boundary: this is the flusher thread's whole loop body,
                 # and a tick that fails must not end the thread silently.
@@ -360,6 +421,8 @@ class AlpacaStreamProcessor:
         try:
             stock_syms = [s for s in self.symbols if not is_crypto_symbol(s)]
             crypto_syms = [to_alpaca_symbol(s) for s in self.symbols if is_crypto_symbol(s)]
+            if stock_syms == [s for s in DEFAULT_SYMBOLS if not is_crypto_symbol(s)]:
+                stock_syms = list(dict.fromkeys([*stock_syms, *INDEX_PROXY_SYMBOLS]))
 
             if stock_syms:
                 self._subscribe_feed("subscribe_trades", self._async_handle_trade, *stock_syms)
@@ -396,8 +459,9 @@ class AlpacaStreamProcessor:
         # particular fails without a bundle on a bare interpreter.
         configure_ca_certificates()
 
-        # Fetch initial snapshot for crypto assets
+        # Fetch initial snapshot for crypto and equity assets
         self._fetch_crypto_snapshot()
+        self._fetch_equity_snapshot()
 
         if self.stream_client is None:
             self.stream_client = self._init_stream_client()
