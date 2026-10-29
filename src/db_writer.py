@@ -174,7 +174,10 @@ class DBWriterWorker(threading.Thread):
                 bars_to_write = []
                 for symbol, bar_data in batch:
                     self._map_bar(symbol, bar_data)
-                    bars_to_write.append(bar_data)
+                    # The queue's contract is ``(symbol, bar)``: a flushed minute bar
+                    # carries no symbol of its own, so the record is assembled here
+                    # or the database would store a bar nothing can look up.
+                    bars_to_write.append({**bar_data, "symbol": symbol})
 
                 if bars_to_write:
                     self.db_manager.add_market_data(bars_to_write)

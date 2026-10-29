@@ -560,7 +560,7 @@ def contract_migration_preserves_bars_and_adds_missing_columns(symbol: str) -> N
             raise AssertionError("init_db() must fail and skip create_all on a mismatched schema")
 
     head_rev = upgrade_db(engine=engine, revision="head")
-    if head_rev != "0002_market_data_volume_and_unique_index" or schema_mismatches(engine):
+    if head_rev != "0002_market_data_volume_unique" or schema_mismatches(engine):
         raise AssertionError(f"unexpected post-upgrade state: rev={head_rev!r}, mismatches={schema_mismatches(engine)}")
 
     rows = db.get_historical_market_data(symbol)
@@ -687,7 +687,7 @@ class TestSqliteContract(unittest.TestCase):
     def test_init_db_skips_create_all_when_tables_exist(self):
         self.assertEqual(
             current_alembic_revision(self.db.connection.engine),
-            "0002_market_data_volume_and_unique_index",
+            "0002_market_data_volume_unique",
         )
         contract_init_db_skips_create_all_when_tables_exist(self.db, self.symbol)
 
@@ -752,7 +752,7 @@ class TestSqliteContract(unittest.TestCase):
                 timeout=15,
             )
             self.assertEqual(post_check.returncode, 0, post_check.stdout + post_check.stderr)
-            self.assertIn("0002_market_data_volume_and_unique_index", post_check.stdout)
+            self.assertIn("0002_market_data_volume_unique", post_check.stdout)
 
             # And the prior bar survived with volume populated as 0.0.
             migrated_db = DatabaseManager(db_url=db_url)

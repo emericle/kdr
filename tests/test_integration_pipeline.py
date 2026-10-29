@@ -202,3 +202,7 @@ def test_stream_bars_reach_the_database_writer():
     worker.join(timeout=2)
 
     assert db_manager.add_market_data.called
+    written = db_manager.add_market_data.call_args[0][0]
+    assert [bar["symbol"] for bar in written] == ["AAPL"], (
+        f"the writer lost the queue's symbol: {written}"
+    )

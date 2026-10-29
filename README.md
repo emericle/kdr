@@ -83,6 +83,8 @@ On a genuinely empty database (first run), `db_manager.connection.init_db()` boo
 ./bin/check-database.sh
 ```
 
+Alembic stores the applied revision in an `alembic_version` column declared `varchar(32)`, so a revision identifier longer than 32 characters makes `upgrade head` fail with a right-truncation error on every deploy. Keep identifiers short (`0002_market_data_volume_unique`, not `0002_market_data_volume_and_unique_index`).
+
 ---
 
 ## Configuration
