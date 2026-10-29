@@ -1,8 +1,12 @@
 """Ensure volume column and unique bar index on market_data without dropping rows.
 
-Revision ID: 0002_market_data_volume_and_unique_index
+Revision ID: 0002_market_data_volume_unique
 Revises: 0001_initial_schema
 Create Date: 2026-10-15 00:05:00
+
+The identifier stays at or under 32 characters because Alembic stores it in an
+``alembic_version`` column declared as ``varchar(32)``; a longer name makes
+``upgrade head`` fail with a right-truncation error on every deploy.
 """
 from __future__ import annotations
 
@@ -11,7 +15,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0002_market_data_volume_and_unique_index"
+revision: str = "0002_market_data_volume_unique"
 down_revision: str | None = "0001_initial_schema"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
