@@ -16,6 +16,16 @@ DEFAULT_SYMBOLS: list[str] = [
     "BTC",  # Bitcoin (gathered from Alpaca)
 ]
 
+# Equity ETF proxies used to populate the 5 top market index trackers (VIX, DJIA,
+# SP500, NASDAQ, RUSSELL2000) via Alpaca's live market data feed.
+INDEX_PROXY_SYMBOLS: list[str] = [
+    "VXX",
+    "DIA",
+    "SPY",
+    "QQQ",
+    "IWM",
+]
+
 # Set of recognized cryptocurrency symbols
 CRYPTO_SYMBOLS: set[str] = {
     "BTC",

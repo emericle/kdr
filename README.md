@@ -112,7 +112,7 @@ Every timestamp the system records is UTC. `src/times.py` is the single place th
 | Helper | Purpose |
 | :--- | :--- |
 | `now_utc()` | Current time as a timezone-aware UTC `datetime` — use this instead of `datetime.now()` or `time.time()` |
-| `to_utc(value)` | Accepts a `datetime` (naive is read as UTC), a numeric epoch in seconds, milliseconds or nanoseconds, or ISO-8601 text, and returns a UTC-aware `datetime` |
+| `to_utc(value)` | Accepts a `datetime` (naive is read as UTC), a numeric epoch in seconds, milliseconds or nanoseconds, ISO-8601 text, or any object exposing `to_datetime()` (the msgpack `Timestamp` the Alpaca websocket decodes into, or a pandas `Timestamp`), and returns a UTC-aware `datetime` |
 | `parse_iso(text)` | ISO-8601 text, read as UTC when it carries no offset |
 | `epoch_seconds(value)` | The float seconds value to store or compare against |
 | `from_epoch(seconds)` | Inverse of `epoch_seconds` |
@@ -286,6 +286,22 @@ Once running, navigate to:
 - Dashboard: `http://localhost:8001/kdr/`
 - API Index: `http://localhost:8001/kdr/api/market-indexes`
 - Status: `http://localhost:8001/kdr/api/status`
+
+### Market index trackers
+
+Alpaca has no index feed, so the five trackers on the dashboard (VIX, DJIA, SP500, NASDAQ, RUSSELL2000) are populated from listed equity proxies that track the same underlying index:
+
+| Index | Proxy |
+| :--- | :--- |
+| VIX | `VXX` |
+| DJIA | `DIA` |
+| SP500 | `SPY` |
+| NASDAQ | `QQQ` |
+| RUSSELL2000 | `IWM` |
+
+`src/symbols.py` names them in `INDEX_PROXY_SYMBOLS`. The stream client subscribes them alongside the traded symbols, but routes their ticks to the dashboard's market buffer only: they never enter the aggregation buffer, the state mapper, or the database queue, and `MarketDataBuffer.get_symbols` leaves them out of the symbol-card list. `src/web_server/data_layer.py` maps each proxy to its index through `SYMBOL_TO_INDEX_MAP`.
+
+Equity snapshots (`get_snapshots`) seed both the cards and the indexes every 15 seconds, so the dashboard paints before the websocket delivers a tick; the snapshot's previous close becomes the reference open price the daily change is measured from.
 
 ---
 
